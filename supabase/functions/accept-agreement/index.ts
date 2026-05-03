@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    const { error: userError } = await supabase
+    const { error: userError, count } = await supabase
       .from('users')
       .update({
         is_creator: true,
@@ -56,11 +56,19 @@ Deno.serve(async (req) => {
         creator_terms_accepted_at: acceptedAt,
       })
       .eq('auth_user_id', auth_user_id)
+      .select('auth_user_id', { count: 'exact', head: true })
 
     if (userError) {
       return new Response(
         JSON.stringify({ error: userError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    if (!count || count === 0) {
+      return new Response(
+        JSON.stringify({ error: 'User not found — no rows updated' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 

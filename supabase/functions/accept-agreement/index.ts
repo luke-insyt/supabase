@@ -25,6 +25,26 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
+    const { data: userRow, error: userLookupError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('auth_user_id', auth_user_id)
+      .maybeSingle()
+
+    if (userLookupError) {
+      return new Response(
+        JSON.stringify({ error: userLookupError.message }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    if (!userRow) {
+      return new Response(
+        JSON.stringify({ error: 'User not found' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
     const acceptedAt = new Date().toISOString()
 
     const { error: acceptanceError } = await supabase
@@ -45,7 +65,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    const { error: userError, count } = await supabase
+    const { error: userError } = await supabase
       .from('users')
       .update({
         is_creator: true,
@@ -56,19 +76,11 @@ Deno.serve(async (req) => {
         creator_terms_accepted_at: acceptedAt,
       })
       .eq('auth_user_id', auth_user_id)
-      .select('auth_user_id', { count: 'exact', head: true })
 
     if (userError) {
       return new Response(
         JSON.stringify({ error: userError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
-    if (!count || count === 0) {
-      return new Response(
-        JSON.stringify({ error: 'User not found — no rows updated' }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 

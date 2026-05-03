@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS public.agreement_acceptances (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  auth_user_id uuid NOT NULL REFERENCES auth.users(id),
+  auth_user_id uuid NOT NULL,
   email text NOT NULL,
   signature_name text NOT NULL,
   version varchar NOT NULL REFERENCES public.agreement_versions(version),

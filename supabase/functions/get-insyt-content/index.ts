@@ -2,7 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
 }
 
 Deno.serve(async (req) => {
@@ -11,59 +11,60 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { insyt_id } = await req.json()
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
 
+    const { insyt_id } = await req.json()
     if (!insyt_id) {
       return new Response(
-        JSON.stringify({ error: 'insyt_id is required' }),
+        JSON.stringify({ error: 'Missing insyt_id' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const userClient = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_ANON_KEY')!,
+      { global: { headers: { Authorization: authHeader } } }
+    )
+
+    const { data: { user }, error: userError } = await userClient.auth.getUser()
+    if (userError || !user?.email) {
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
-    const jwt = authHeader.replace('Bearer ', '')
 
-    const supabase = createClient(
+    const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser(jwt)
-
-    if (authError || !user || !user.email) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
-    const buyerEmail = user.email
-
-    const { data: purchase, error: purchaseError } = await supabase
+    const { data: purchase } = await serviceClient
       .from('purchases')
       .select('id')
+      .eq('buyer_email', user.email)
       .eq('insyt_id', insyt_id)
-      .eq('buyer_email', buyerEmail)
       .maybeSingle()
 
-    if (purchaseError || !purchase) {
+    if (!purchase) {
       return new Response(
-        JSON.stringify({ error: 'Forbidden — no purchase found' }),
+        JSON.stringify({ error: 'Not purchased' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
-    const { data: insyt, error: insytError } = await supabase
+    const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
       .select('body_html, video_storage_path')
       .eq('insyt_id', insyt_id)
-      .single()
+      .maybeSingle()
 
     if (insytError || !insyt) {
       return new Response(
@@ -72,10 +73,18 @@ Deno.serve(async (req) => {
       )
     }
 
+    let videoSignedUrl: string | null = null
+    if (insyt.video_storage_path) {
+      const { data: signed } = await serviceClient.storage
+        .from('insyt-videos')
+        .createSignedUrl(insyt.video_storage_path, 3600)
+      videoSignedUrl = signed?.signedUrl ?? null
+    }
+
     return new Response(
       JSON.stringify({
         body_html: insyt.body_html ?? null,
-        video_storage_path: insyt.video_storage_path ?? null,
+        video_url: videoSignedUrl,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )

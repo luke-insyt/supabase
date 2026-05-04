@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
 
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('body_html, video_storage_path')
+      .select('body_html, video_url')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -74,10 +74,11 @@ Deno.serve(async (req) => {
     }
 
     let videoSignedUrl: string | null = null
-    if (insyt.video_storage_path) {
+    if (insyt.video_url) {
+      const videoPath = insyt.video_url.replace(/^insyt-videos\//, '')
       const { data: signed } = await serviceClient.storage
         .from('insyt-videos')
-        .createSignedUrl(insyt.video_storage_path, 3600)
+        .createSignedUrl(videoPath, 3600)
       videoSignedUrl = signed?.signedUrl ?? null
     }
 

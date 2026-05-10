@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
 
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, body_text, video_url')
+      .select('id, body_html, video_url')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
     const videoAttachment = enriched.find((a) => a.kind === 'video')
 
     return json(200, {
-      body_html: insyt.body_text ?? null,
+      body_html: insyt.body_html ?? null,
       video_url: videoAttachment?.signed_url ?? null,
       attachments: enriched,
     })

@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 const SIGNED_URL_TTL_SECONDS = 3600
-const PUBLIC_BUCKETS = new Set(['insyts-thumbnails'])
+const PUBLIC_BUCKETS = new Set(['insyt-thumbnails'])
 
 type Attachment = {
   id: string | null

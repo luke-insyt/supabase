@@ -5,6 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
 }
 
+// deploy: redeploy trigger 2026-05-11
 const SIGNED_URL_TTL_SECONDS = 3600
 const PUBLIC_BUCKETS = new Set(['insyt-thumbnails'])
 

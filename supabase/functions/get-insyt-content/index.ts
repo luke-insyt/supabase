@@ -5,7 +5,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
 }
 
-// deploy: redeploy trigger 2026-05-11
 const SIGNED_URL_TTL_SECONDS = 3600
 const PUBLIC_BUCKETS = new Set(['insyt-thumbnails'])
 
@@ -17,6 +16,8 @@ type Attachment = {
   filename: string | null
   mime: string | null
   position: number | null
+  width: number | null
+  height: number | null
   signed_url: string | null
 }
 
@@ -90,7 +91,7 @@ Deno.serve(async (req) => {
 
     const { data: rawAttachments, error: attachmentsError } = await serviceClient
       .from('insyt_attachments')
-      .select('id, kind, bucket, storage_path, filename, mime, position')
+      .select('id, kind, bucket, storage_path, filename, mime, position, width, height')
       .eq('insyt_id', insyt.id)
       .order('kind', { ascending: true })
       .order('position', { ascending: true, nullsFirst: false })
@@ -107,6 +108,8 @@ Deno.serve(async (req) => {
       filename: a.filename,
       mime: a.mime,
       position: a.position,
+      width: a.width,
+      height: a.height,
     }))
 
     // Back-compat: legacy insyts written before insyt_attachments existed have only
@@ -125,6 +128,8 @@ Deno.serve(async (req) => {
           filename: null,
           mime: null,
           position: 0,
+          width: null,
+          height: null,
         })
       }
     }

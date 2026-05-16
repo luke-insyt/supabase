@@ -134,7 +134,7 @@ Deno.serve(async (req) => {
   }
 
   const sport       = String(form.get('sport') || '').trim()
-  const others      = String(form.get('others') || '').trim()
+  const contentType = String(form.get('content_type') || '').trim()
   const title       = String(form.get('title') || '').trim()
   const description = String(form.get('description') || '').trim()
   const fullText    = String(form.get('full_text') || '').trim()
@@ -222,7 +222,7 @@ Deno.serve(async (req) => {
     .insert({
       title,
       abstract: description || ' ',
-      content_type: coverType,
+      content_type: contentType || coverType,
       sport: sport || 'soccer',
       thumbnail_url: thumbnailUrl,
       video_url: videoUrl,

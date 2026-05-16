@@ -147,7 +147,11 @@ Deno.serve(async (req) => {
     return json(500, { error: 'N8N_CREATE_INSYT_URL is not configured' })
   }
 
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+  const env = supabaseUrl.includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging'
+
   const forwardBody = {
+    env,
     auth_user_id: authUserId,
     creator_email: creatorEmail,
     correlation_id,

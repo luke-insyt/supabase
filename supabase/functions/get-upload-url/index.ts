@@ -1,3 +1,6 @@
+// Issues a short-lived Supabase Storage signed upload URL for the
+// create-insyt-native two-phase upload flow. See submit-create-insyt
+// for the matching submit/draft handler.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {

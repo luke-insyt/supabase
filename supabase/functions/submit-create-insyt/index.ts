@@ -1,3 +1,6 @@
+// Handles the create-insyt-native submit/draft lifecycle: validates the
+// creator + payload, then forwards "submit" to the n8n pipeline with a
+// shared secret. See get-upload-url for the matching upload-URL issuer.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {

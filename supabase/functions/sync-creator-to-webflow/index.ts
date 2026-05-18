@@ -31,6 +31,16 @@ type CreatorFields = {
   email: string
   'auth-user-id': string
   bio?: string
+  headline?: string
+  'profile-image'?: { url: string }
+  'joined-date'?: string
+}
+
+function buildAvatarUrl(supabaseUrl: string, profileImage: string | null): string | undefined {
+  if (!profileImage) return undefined
+  if (/^https?:\/\//i.test(profileImage)) return profileImage
+  // Bucket is public so the object endpoint resolves directly.
+  return `${supabaseUrl.replace(/\/+$/, '')}/storage/v1/object/public/creator-avatars/${profileImage.replace(/^\/+/, '')}`
 }
 
 async function wf(path: string, init?: RequestInit) {
@@ -86,7 +96,7 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, webflow_creator_id')
+    .select('display_name, bio, headline, profile_image_url, creator_activated_at, created_at, webflow_creator_id')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
@@ -94,6 +104,12 @@ Deno.serve(async (req) => {
 
   const displayName = (userRow.display_name || '').trim() || email
   const bio = (userRow.bio || '').trim()
+  const headline = (userRow.headline || '').trim()
+  const profileImage = buildAvatarUrl(
+    Deno.env.get('SUPABASE_URL') || '',
+    (userRow.profile_image_url as string | null) || null,
+  )
+  const joinedDate = (userRow.creator_activated_at as string | null) || (userRow.created_at as string | null) || undefined
 
   const fields: CreatorFields = {
     name: displayName,
@@ -101,6 +117,9 @@ Deno.serve(async (req) => {
     email,
     'auth-user-id': authUserId,
     bio,
+    headline,
+    'profile-image': profileImage ? { url: profileImage } : undefined,
+    'joined-date': joinedDate,
   }
 
   let webflowCreatorId = userRow.webflow_creator_id as string | null

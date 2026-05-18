@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
 
   const { data: userRow } = await svc
     .from('users')
-    .select('is_creator')
+    .select('is_creator, display_name, bio, webflow_creator_id')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (!userRow?.is_creator) return json(403, { error: 'Not an active creator' })
@@ -161,6 +161,10 @@ Deno.serve(async (req) => {
     env,
     auth_user_id: authUserId,
     creator_email: creatorEmail,
+    // null when the creator hasn't synced their profile yet. n8n should
+    // skip the `creator` reference field on the Insyts CMS item in that
+    // case; the binding falls back to creator-email until the next sync.
+    webflow_creator_id: userRow?.webflow_creator_id || null,
     correlation_id,
     insyt_id: payload.insyt_id || null,
     sport: payload.sport,

@@ -15,7 +15,7 @@ const json = (status: number, body: unknown) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-type Action = 'save_draft' | 'submit' | 'discard' | 'load_draft'
+type Action = 'save_draft' | 'submit' | 'discard' | 'load_draft' | 'list_drafts'
 
 type Attachment = {
   bucket: string
@@ -95,6 +95,10 @@ Deno.serve(async (req) => {
 
   if (action === 'load_draft') {
     return await loadDraft(svc, creatorEmail)
+  }
+
+  if (action === 'list_drafts') {
+    return await listDrafts(svc, creatorEmail)
   }
 
   if (action === 'discard') {
@@ -209,12 +213,31 @@ async function loadDraft(svc: ReturnType<typeof createClient>, creatorEmail: str
     .eq('creator_email', creatorEmail)
     .eq('status', 'draft')
     .gte('created_at', sevenDaysAgo)
-    .order('created_at', { ascending: false })
+    .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle()
 
   if (error) return json(500, { error: error.message })
   return json(200, { draft: data || null })
+}
+
+// Returns up to 10 of the creator's most-recently-edited drafts (≤7 days old).
+// Each row is the full draft including its attachments, so the frontend can
+// hydrate any of them via the same path as the single-draft resume banner —
+// no second round-trip needed when the user picks one.
+async function listDrafts(svc: ReturnType<typeof createClient>, creatorEmail: string) {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const { data, error } = await svc
+    .from('insyts')
+    .select('*, insyt_attachments(*)')
+    .eq('creator_email', creatorEmail)
+    .eq('status', 'draft')
+    .gte('created_at', sevenDaysAgo)
+    .order('updated_at', { ascending: false })
+    .limit(10)
+
+  if (error) return json(500, { error: error.message })
+  return json(200, { drafts: data || [] })
 }
 
 async function discardDraft(

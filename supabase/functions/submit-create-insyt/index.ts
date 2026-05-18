@@ -313,6 +313,9 @@ async function saveDraft(
 
   if (insyt_id) {
     // Update existing draft (must belong to this creator and still be a draft).
+    // correlation_id is intentionally NOT updated — it's fixed at first insert
+    // so the {user_id}/{correlation_id}/ prefix on attachment paths stays valid
+    // for the lifetime of the draft, including across resume sessions.
     const { data, error } = await svc
       .from('insyts')
       .update(row)
@@ -327,7 +330,7 @@ async function saveDraft(
   } else {
     const { data, error } = await svc
       .from('insyts')
-      .insert(row)
+      .insert({ ...row, correlation_id: args.correlation_id })
       .select('id')
       .single()
     if (error) return json(500, { error: error.message })

@@ -272,7 +272,7 @@ async function saveDraft(
     abstract: String(payload.description || '').trim() || ' ',
     content_type: String(payload.content_type || '').trim() || null,
     sport: String(payload.sport || '').trim() || 'soccer',
-    body_text: String(payload.full_text || '').trim() || null,
+    body_html: String(payload.full_text || '').trim() || null,
     price_eur: payload.is_free ? 0 : Number(payload.price_cents || 0),
     tags: payload.tags || [],
     creator_email: creatorEmail,

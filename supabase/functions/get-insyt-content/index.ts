@@ -62,23 +62,13 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    const { data: purchase, error: purchaseError } = await serviceClient
-      .from('purchases')
-      .select('id')
-      .eq('buyer_email', user.email)
-      .eq('insyt_id', insyt_id)
-      .maybeSingle()
-
-    if (purchaseError) {
-      return json(500, { error: 'Failed to query purchases', details: purchaseError.message })
-    }
-    if (!purchase) {
-      return json(403, { error: 'No purchase found for this user and insyt' })
-    }
-
+    // Fetch the insyt first so we can grant access to its creator without
+    // requiring them to "buy" their own content. Body/video are needed for
+    // both the creator and a paying buyer, so this query is not wasted in
+    // either branch.
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, body_html, video_url')
+      .select('id, body_html, video_url, creator_email')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -87,6 +77,26 @@ Deno.serve(async (req) => {
     }
     if (!insyt) {
       return json(404, { error: 'Insyt not found', insyt_id })
+    }
+
+    const isCreator =
+      typeof insyt.creator_email === 'string' &&
+      insyt.creator_email.toLowerCase() === user.email.toLowerCase()
+
+    if (!isCreator) {
+      const { data: purchase, error: purchaseError } = await serviceClient
+        .from('purchases')
+        .select('id')
+        .eq('buyer_email', user.email)
+        .eq('insyt_id', insyt_id)
+        .maybeSingle()
+
+      if (purchaseError) {
+        return json(500, { error: 'Failed to query purchases', details: purchaseError.message })
+      }
+      if (!purchase) {
+        return json(403, { error: 'No purchase found for this user and insyt' })
+      }
     }
 
     const { data: rawAttachments, error: attachmentsError } = await serviceClient

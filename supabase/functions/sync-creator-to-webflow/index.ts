@@ -34,7 +34,17 @@ type CreatorFields = {
   headline?: string
   'profile-image'?: { url: string }
   'joined-date'?: string
+  username?: string
+  location?: string
+  website?: string
+  youtube?: string
+  instagram?: string
+  facebook?: string
+  tiktok?: string
 }
+
+type SocialPlatform = 'youtube' | 'instagram' | 'facebook' | 'tiktok'
+const SOCIAL_PLATFORMS: SocialPlatform[] = ['youtube', 'instagram', 'facebook', 'tiktok']
 
 function buildAvatarUrl(supabaseUrl: string, profileImage: string | null): string | undefined {
   if (!profileImage) return undefined
@@ -96,15 +106,31 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, headline, profile_image_url, creator_activated_at, created_at, webflow_creator_id')
+    .select('display_name, bio, headline, profile_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
   if (!userRow) return json(404, { error: 'User row not found' })
 
+  const { data: socialRows, error: socialErr } = await svc
+    .from('user_social_links')
+    .select('platform, handle')
+    .eq('user_id', authUserId)
+  if (socialErr) return json(500, { error: socialErr.message })
+
+  const socials: Record<SocialPlatform, string> = { youtube: '', instagram: '', facebook: '', tiktok: '' }
+  for (const row of (socialRows || []) as { platform: string; handle: string }[]) {
+    if ((SOCIAL_PLATFORMS as string[]).includes(row.platform)) {
+      socials[row.platform as SocialPlatform] = (row.handle || '').trim()
+    }
+  }
+
   const displayName = (userRow.display_name || '').trim() || email
   const bio = (userRow.bio || '').trim()
   const headline = (userRow.headline || '').trim()
+  const username = ((userRow.username as string | null) || '').trim()
+  const location = ((userRow.location as string | null) || '').trim()
+  const website = ((userRow.website as string | null) || '').trim()
   const profileImage = buildAvatarUrl(
     Deno.env.get('SUPABASE_URL') || '',
     (userRow.profile_image_url as string | null) || null,
@@ -120,6 +146,13 @@ Deno.serve(async (req) => {
     headline,
     'profile-image': profileImage ? { url: profileImage } : undefined,
     'joined-date': joinedDate,
+    username,
+    location,
+    website,
+    youtube: socials.youtube,
+    instagram: socials.instagram,
+    facebook: socials.facebook,
+    tiktok: socials.tiktok,
   }
 
   let webflowCreatorId = userRow.webflow_creator_id as string | null

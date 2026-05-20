@@ -33,6 +33,7 @@ type CreatorFields = {
   bio?: string
   headline?: string
   'profile-image'?: { url: string }
+  'cover-image'?: { url: string }
   'joined-date'?: string
   username?: string
   location?: string
@@ -51,6 +52,12 @@ function buildAvatarUrl(supabaseUrl: string, profileImage: string | null): strin
   if (/^https?:\/\//i.test(profileImage)) return profileImage
   // Bucket is public so the object endpoint resolves directly.
   return `${supabaseUrl.replace(/\/+$/, '')}/storage/v1/object/public/creator-avatars/${profileImage.replace(/^\/+/, '')}`
+}
+
+function buildCoverUrl(supabaseUrl: string, coverImage: string | null): string | undefined {
+  if (!coverImage) return undefined
+  if (/^https?:\/\//i.test(coverImage)) return coverImage
+  return `${supabaseUrl.replace(/\/+$/, '')}/storage/v1/object/public/creator-covers/${coverImage.replace(/^\/+/, '')}`
 }
 
 async function wf(path: string, init?: RequestInit) {
@@ -106,7 +113,7 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, headline, profile_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website')
+    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
@@ -135,6 +142,10 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_URL') || '',
     (userRow.profile_image_url as string | null) || null,
   )
+  const coverImage = buildCoverUrl(
+    Deno.env.get('SUPABASE_URL') || '',
+    (userRow.cover_image_url as string | null) || null,
+  )
   const joinedDate = (userRow.creator_activated_at as string | null) || (userRow.created_at as string | null) || undefined
 
   const fields: CreatorFields = {
@@ -145,6 +156,7 @@ Deno.serve(async (req) => {
     bio,
     headline,
     'profile-image': profileImage ? { url: profileImage } : undefined,
+    'cover-image': coverImage ? { url: coverImage } : undefined,
     'joined-date': joinedDate,
     username,
     location,

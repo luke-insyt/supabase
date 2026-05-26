@@ -15,13 +15,25 @@ ALTER TABLE public.users
 --    A = display_name, B = headline + bio, C = expertise tags.
 --    'simple' dictionary (no stemming / stop-words) matches the feed and keeps
 --    multi-word / multi-language tokens intact.
+--
+-- array_to_string() is only STABLE in Postgres, and GENERATED columns require
+-- IMMUTABLE expressions, so flattening the expertise text[] inline is rejected
+-- ("generation expression is not immutable"). Wrap it in an IMMUTABLE SQL
+-- function — for a text[] of plain tags the flattening is effectively immutable.
+CREATE OR REPLACE FUNCTION public.expertise_search_text(tags text[])
+  RETURNS text
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+AS $$ SELECT array_to_string(coalesce(tags, '{}'), ' ') $$;
+
 ALTER TABLE public.users
   ADD COLUMN search_vector tsvector
     GENERATED ALWAYS AS (
       setweight(to_tsvector('simple', coalesce(display_name, '')), 'A') ||
       setweight(to_tsvector('simple', coalesce(headline, '')), 'B') ||
       setweight(to_tsvector('simple', coalesce(bio, '')), 'B') ||
-      setweight(to_tsvector('simple', array_to_string(coalesce(expertise, '{}'), ' ')), 'C')
+      setweight(to_tsvector('simple', public.expertise_search_text(expertise)), 'C')
     ) STORED;
 
 COMMENT ON COLUMN public.users.search_vector IS

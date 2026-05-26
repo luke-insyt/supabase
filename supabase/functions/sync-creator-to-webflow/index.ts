@@ -32,6 +32,7 @@ type CreatorFields = {
   'auth-user-id': string
   bio?: string
   headline?: string
+  expertise?: string
   'profile-image'?: { url: string }
   'cover-image'?: { url: string }
   'joined-date'?: string
@@ -113,7 +114,7 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website')
+    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website, expertise')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
@@ -135,6 +136,9 @@ Deno.serve(async (req) => {
   const displayName = (userRow.display_name || '').trim() || email
   const bio = (userRow.bio || '').trim()
   const headline = (userRow.headline || '').trim()
+  const expertise = Array.isArray(userRow.expertise)
+    ? (userRow.expertise as string[]).join(', ')
+    : ''
   const username = ((userRow.username as string | null) || '').trim()
   const location = ((userRow.location as string | null) || '').trim()
   const website = ((userRow.website as string | null) || '').trim()
@@ -155,6 +159,7 @@ Deno.serve(async (req) => {
     'auth-user-id': authUserId,
     bio,
     headline,
+    expertise,
     'profile-image': profileImage ? { url: profileImage } : undefined,
     'cover-image': coverImage ? { url: coverImage } : undefined,
     'joined-date': joinedDate,

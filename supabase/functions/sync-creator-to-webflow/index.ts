@@ -114,7 +114,7 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website, expertise')
+    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
@@ -126,6 +126,13 @@ Deno.serve(async (req) => {
     .eq('user_id', authUserId)
   if (socialErr) return json(500, { error: socialErr.message })
 
+  // Expertise tags are normalized (public.creator_expertise -> public.expertise_tags).
+  const { data: expertiseRows, error: expertiseErr } = await svc
+    .from('creator_expertise')
+    .select('expertise_tags(label)')
+    .eq('user_id', authUserId)
+  if (expertiseErr) return json(500, { error: expertiseErr.message })
+
   const socials: Record<SocialPlatform, string> = { youtube: '', instagram: '', facebook: '', tiktok: '' }
   for (const row of (socialRows || []) as { platform: string; handle: string }[]) {
     if ((SOCIAL_PLATFORMS as string[]).includes(row.platform)) {
@@ -136,9 +143,11 @@ Deno.serve(async (req) => {
   const displayName = (userRow.display_name || '').trim() || email
   const bio = (userRow.bio || '').trim()
   const headline = (userRow.headline || '').trim()
-  const expertise = Array.isArray(userRow.expertise)
-    ? (userRow.expertise as string[]).join(', ')
-    : ''
+  const expertise = ((expertiseRows || []) as { expertise_tags: { label: string } | null }[])
+    .map((row) => row.expertise_tags?.label)
+    .filter((label): label is string => !!label)
+    .sort((a, b) => a.localeCompare(b))
+    .join(', ')
   const username = ((userRow.username as string | null) || '').trim()
   const location = ((userRow.location as string | null) || '').trim()
   const website = ((userRow.website as string | null) || '').trim()

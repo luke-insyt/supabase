@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
     // either branch.
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, body_html, video_url, creator_email')
+      .select('id, body_html, video_url, creator_email, price_eur')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -83,7 +83,11 @@ Deno.serve(async (req) => {
       typeof insyt.creator_email === 'string' &&
       insyt.creator_email.toLowerCase() === user.email.toLowerCase()
 
-    if (!isCreator) {
+    // Free insyts (price_eur = 0) are readable by any authenticated user
+    // without a purchase row — the content should be visible immediately.
+    const isFree = Number(insyt.price_eur) === 0
+
+    if (!isCreator && !isFree) {
       const { data: purchase, error: purchaseError } = await serviceClient
         .from('purchases')
         .select('id')

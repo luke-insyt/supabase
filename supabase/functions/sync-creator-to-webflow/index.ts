@@ -140,7 +140,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  const displayName = (userRow.display_name || '').trim() || email
   const bio = (userRow.bio || '').trim()
   const headline = (userRow.headline || '').trim()
   const expertise = ((expertiseRows || []) as { expertise_tags: { label: string } | null }[])
@@ -149,6 +148,10 @@ Deno.serve(async (req) => {
     .sort((a, b) => a.localeCompare(b))
     .join(', ')
   const username = ((userRow.username as string | null) || '').trim()
+  // Creators.Name must never be blank — the right-side "Newest reports" /
+  // "Newest insyters" panels bind to it. Fallback chain: display_name →
+  // username → email. (#2)
+  const displayName = (userRow.display_name || '').trim() || username || email
   const location = ((userRow.location as string | null) || '').trim()
   const website = ((userRow.website as string | null) || '').trim()
   const profileImage = buildAvatarUrl(

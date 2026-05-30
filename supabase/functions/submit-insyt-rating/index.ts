@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
     // the lookup pattern in get-insyt-content).
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, creator_email')
+      .select('id, creator_email, price_eur')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -108,19 +108,25 @@ Deno.serve(async (req) => {
       return json(403, { error: 'not_eligible', reason: 'creator_cannot_rate_own_insyt' })
     }
 
-    // Purchase check — same shape as get-insyt-content's purchase branch.
-    const { data: purchase, error: purchaseError } = await serviceClient
-      .from('purchases')
-      .select('id')
-      .eq('buyer_email', user.email)
-      .eq('insyt_id', insyt_id)
-      .maybeSingle()
+    // Free insyts (price_eur = 0) are readable by any authenticated user, so
+    // they're rateable without a purchase row — mirror get-insyt-content's
+    // access model. Paid insyts still require a purchase.
+    const isFree = Number(insyt.price_eur) === 0
+    if (!isFree) {
+      // Purchase check — same shape as get-insyt-content's purchase branch.
+      const { data: purchase, error: purchaseError } = await serviceClient
+        .from('purchases')
+        .select('id')
+        .eq('buyer_email', user.email)
+        .eq('insyt_id', insyt_id)
+        .maybeSingle()
 
-    if (purchaseError) {
-      return json(500, { error: 'purchases_query_failed', details: purchaseError.message })
-    }
-    if (!purchase) {
-      return json(403, { error: 'not_eligible', reason: 'purchase_required' })
+      if (purchaseError) {
+        return json(500, { error: 'purchases_query_failed', details: purchaseError.message })
+      }
+      if (!purchase) {
+        return json(403, { error: 'not_eligible', reason: 'purchase_required' })
+      }
     }
 
     // Upsert. PK on (insyt_id, user_id) collapses re-rates to one row.

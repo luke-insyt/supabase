@@ -24,61 +24,47 @@ alter table public.users
 comment on column public.users.sports is 'Sports this creator covers (canonical labels from js/lib/insyt-taxonomy.js).';
 comment on column public.users.content_types is 'Content types this creator produces (canonical labels).';
 
--- 2. Recreate creator_search with the full column set + new sports/content_types.
-drop view if exists public.creator_search;
+-- 2. Expose the new sports/content_types on creator_search.
+--    CREATE OR REPLACE (append-only) preserves the existing security_invoker = off
+--    and grants; the two new columns are appended last. This reproduces the live
+--    definition from 20260529130000_add_follows.sql VERBATIM (report_count and
+--    follower_count are maintained users columns, search_vector is a stored column,
+--    expertise is a correlated subquery — NOT aggregates), then appends sports +
+--    content_types. Re-assert security_invoker/grants as belt-and-braces.
+create or replace view public.creator_search as
+  select
+    u.auth_user_id,
+    u.display_name,
+    u.headline,
+    u.bio,
+    u.profile_image_url,
+    u.experience_years,
+    u.search_vector,
+    u.creator_activated_at,
+    u.created_at,
+    coalesce(
+      (select array_agg(t.label order by t.label)
+         from public.creator_expertise ce
+         join public.expertise_tags t on t.id = ce.tag_id
+        where ce.user_id = u.auth_user_id),
+      '{}'
+    ) as expertise,
+    coalesce(
+      (select array_agg(t.slug order by t.slug)
+         from public.creator_expertise ce
+         join public.expertise_tags t on t.id = ce.tag_id
+        where ce.user_id = u.auth_user_id),
+      '{}'
+    ) as expertise_slugs,
+    u.report_count,
+    u.follower_count,
+    coalesce(u.sports, '{}')        as sports,
+    coalesce(u.content_types, '{}') as content_types
+  from public.users u
+  where u.is_creator = true;
 
-create view public.creator_search as
-select
-  u.auth_user_id,
-  u.display_name,
-  u.username,
-  u.headline,
-  u.bio,
-  u.profile_image_url,
-  u.experience_years,
-  u.is_creator,
-  coalesce(
-    array_agg(distinct et.label) filter (where et.label is not null),
-    '{}'
-  ) as expertise,
-  coalesce(
-    array_agg(distinct et.slug) filter (where et.slug is not null),
-    '{}'
-  ) as expertise_slugs,
-  coalesce(u.sports, '{}')        as sports,
-  coalesce(u.content_types, '{}') as content_types,
-  (
-    select count(*)::int
-    from public.creator_reports cr
-    where cr.creator_id = u.auth_user_id
-  ) as report_count,
-  (
-    select count(*)::int
-    from public.user_follows uf
-    where uf.creator_id = u.auth_user_id
-  ) as follower_count,
-  to_tsvector(
-    'simple',
-    coalesce(u.display_name, '') || ' ' ||
-    coalesce(u.headline, '') || ' ' ||
-    coalesce(u.bio, '') || ' ' ||
-    coalesce(string_agg(et.label, ' '), '')
-  ) as search_vector
-from public.users u
-left join public.creator_expertise ce on ce.user_id = u.auth_user_id
-left join public.expertise_tags et on et.id = ce.tag_id
-where u.is_creator = true
-group by
-  u.auth_user_id,
-  u.display_name,
-  u.username,
-  u.headline,
-  u.bio,
-  u.profile_image_url,
-  u.experience_years,
-  u.is_creator,
-  u.sports,
-  u.content_types;
+alter view public.creator_search set (security_invoker = off);
+grant select on public.creator_search to anon, authenticated;
 
 comment on view public.creator_search is 'Denormalized creator directory for /insyters search + filters (incl. sports + content_types).';
 

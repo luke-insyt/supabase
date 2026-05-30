@@ -173,6 +173,10 @@ Deno.serve(async (req) => {
       body_html: insyt.body_html ?? null,
       video_url: videoAttachment?.signed_url ?? null,
       attachments: enriched,
+      // How access was granted, so the client can render the right CTA state
+      // without a flash (free → no "purchased" badge, creator → own content).
+      is_free: isFree,
+      is_creator: isCreator,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

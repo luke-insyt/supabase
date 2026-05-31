@@ -103,6 +103,26 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Record a unique view — only now that access is granted, and never for the
+    // creator viewing their own insyt. Idempotent: the upsert on the
+    // (insyt_id, user_id) PK just bumps last_viewed_at for a returning viewer,
+    // so the distinct count (insyts.view_count, via the AFTER INSERT trigger)
+    // only grows on a genuinely new viewer. Best-effort: a failure here must
+    // never block content delivery.
+    if (!isCreator) {
+      try {
+        const { error: viewError } = await serviceClient
+          .from('insyt_views')
+          .upsert(
+            { insyt_id: insyt.id, user_id: user.id, last_viewed_at: new Date().toISOString() },
+            { onConflict: 'insyt_id,user_id' }
+          )
+        if (viewError) console.error('[get-insyt-content] view record failed', viewError.message)
+      } catch (viewErr) {
+        console.error('[get-insyt-content] view record threw', viewErr)
+      }
+    }
+
     const { data: rawAttachments, error: attachmentsError } = await serviceClient
       .from('insyt_attachments')
       .select('id, kind, bucket, storage_path, filename, mime, position, width, height')

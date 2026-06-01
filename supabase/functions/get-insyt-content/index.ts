@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
     // either branch.
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, body_html, video_url, creator_email, price_eur')
+      .select('id, body_html, video_url, creator_email, price_eur, creator_auth_user_id')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -87,6 +87,9 @@ Deno.serve(async (req) => {
     // without a purchase row — the content should be visible immediately.
     const isFree = Number(insyt.price_eur) === 0
 
+    // How access was granted (for the client CTA): one-off purchase vs an
+    // active subscription to the creator. Free + creator paths leave both false.
+    let viaSubscription = false
     if (!isCreator && !isFree) {
       const { data: purchase, error: purchaseError } = await serviceClient
         .from('purchases')
@@ -98,8 +101,29 @@ Deno.serve(async (req) => {
       if (purchaseError) {
         return json(500, { error: 'Failed to query purchases', details: purchaseError.message })
       }
+
       if (!purchase) {
-        return json(403, { error: 'No purchase found for this user and insyt' })
+        // No one-off purchase — an active subscription to this creator unlocks
+        // ALL their insyts. past_due is honoured so access is kept during the
+        // retry/grace window; only a canceled sub loses access. Subscriptions
+        // are keyed on the creator's auth uid (insyts.creator_auth_user_id,
+        // denormalised in the follows migration 20260529130000).
+        if (insyt.creator_auth_user_id) {
+          const { data: sub, error: subError } = await serviceClient
+            .from('creator_subscriptions')
+            .select('id')
+            .eq('subscriber_id', user.id)
+            .eq('creator_id', insyt.creator_auth_user_id)
+            .in('status', ['active', 'trialing', 'past_due'])
+            .maybeSingle()
+          if (subError) {
+            return json(500, { error: 'Failed to query subscriptions', details: subError.message })
+          }
+          viaSubscription = !!sub
+        }
+        if (!viaSubscription) {
+          return json(403, { error: 'No purchase or active subscription for this user and insyt' })
+        }
       }
     }
 
@@ -194,9 +218,11 @@ Deno.serve(async (req) => {
       video_url: videoAttachment?.signed_url ?? null,
       attachments: enriched,
       // How access was granted, so the client can render the right CTA state
-      // without a flash (free → no "purchased" badge, creator → own content).
+      // without a flash (free → no "purchased" badge, creator → own content,
+      // subscription → "Subscribed" rather than "Purchased").
       is_free: isFree,
       is_creator: isCreator,
+      via_subscription: viaSubscription,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

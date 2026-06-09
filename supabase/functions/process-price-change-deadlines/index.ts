@@ -56,8 +56,24 @@ Deno.serve(async (req) => {
   try {
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     // Only the service role (n8n cron) may run the sweep — it makes Stripe calls.
+    // The gateway (verify-jwt ON) already validated the token's signature, so we
+    // only need to confirm the service_role claim. A plain equality check against
+    // SUPABASE_SERVICE_ROLE_KEY is brittle: Supabase's new API-key formats mean
+    // the injected env value and the legacy service-role JWT n8n holds can both
+    // be valid yet differ byte-for-byte (that mismatch 401'd the daily sweep).
+    // Decoding (not verifying) the payload is safe because the gateway already
+    // proved authenticity; the exact-match below stays as a fallback for a
+    // non-JWT secret key.
     const authHeader = req.headers.get('Authorization') || ''
-    if (authHeader !== 'Bearer ' + serviceKey) {
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+    let isServiceRole = false
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1] || ''))
+      isServiceRole = payload?.role === 'service_role'
+    } catch (_) {
+      isServiceRole = false
+    }
+    if (!isServiceRole && authHeader !== 'Bearer ' + serviceKey) {
       return json(401, { error: 'Unauthorized' })
     }
 

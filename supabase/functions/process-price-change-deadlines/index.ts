@@ -38,6 +38,24 @@ async function stripe(path: string, key: string, form?: URLSearchParams) {
   return { ok: resp.ok, status: resp.status, data }
 }
 
+const toIso = (s?: number | null) => (s ? new Date(s * 1000).toISOString() : null)
+
+// Fire-and-forget notice to n8n (which owns email). No-op until the
+// N8N_PRICE_CHANGE_WEBHOOK_URL secret is set. Never fatal.
+async function notify(payload: Record<string, unknown>) {
+  const url = Deno.env.get('N8N_PRICE_CHANGE_WEBHOOK_URL')
+  if (!url) return
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (err) {
+    console.error('[deadlines] notify webhook failed', err)
+  }
+}
+
 const CLEAR_PENDING = {
   pending_price_id: null,
   pending_amount_cents: null,
@@ -84,7 +102,7 @@ Deno.serve(async (req) => {
 
     const { data: due, error: dueError } = await serviceClient
       .from('creator_subscriptions')
-      .select('id, status, stripe_subscription_id, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency')
+      .select('id, subscriber_id, creator_id, status, stripe_subscription_id, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency')
       .eq('pending_status', 'pending')
       .lte('pending_deadline', new Date().toISOString())
       .limit(BATCH_LIMIT)
@@ -109,6 +127,21 @@ Deno.serve(async (req) => {
           if (!cancel.ok) { console.error('[deadlines] cancel failed', row.id, cancel.data); summary.errors++; continue }
           await serviceClient.from('creator_subscriptions')
             .update({ cancel_at_period_end: true, ...CLEAR_PENDING }).eq('id', row.id)
+          // Notify the subscriber their sub is ending (price increase not accepted).
+          const { data: people } = await serviceClient
+            .from('users')
+            .select('auth_user_id, email, display_name')
+            .in('auth_user_id', [row.creator_id, row.subscriber_id])
+          const subUser = people?.find((p) => p.auth_user_id === row.subscriber_id)
+          await notify({
+            event: 'price_change_ending',
+            creator_id: row.creator_id,
+            creator_name: people?.find((p) => p.auth_user_id === row.creator_id)?.display_name || 'A creator',
+            new_amount_cents: row.pending_amount_cents,
+            currency: row.pending_currency,
+            end_date: toIso(cancel.data?.current_period_end),
+            subscribers: subUser ? [{ id: subUser.auth_user_id, email: subUser.email, name: subUser.display_name }] : [],
+          })
           summary.canceled++
         } else if (row.pending_kind === 'decrease') {
           // Auto-apply the lower price at next renewal.

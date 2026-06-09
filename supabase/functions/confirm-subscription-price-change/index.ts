@@ -44,6 +44,24 @@ async function stripe(path: string, key: string, form?: URLSearchParams) {
   return { ok: resp.ok, status: resp.status, data }
 }
 
+const toIso = (s?: number | null) => (s ? new Date(s * 1000).toISOString() : null)
+
+// Fire-and-forget notice to n8n (which owns email). No-op until the
+// N8N_PRICE_CHANGE_WEBHOOK_URL secret is set. Never fatal.
+async function notify(payload: Record<string, unknown>) {
+  const url = Deno.env.get('N8N_PRICE_CHANGE_WEBHOOK_URL')
+  if (!url) return
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (err) {
+    console.error('[confirm-price-change] notify webhook failed', err)
+  }
+}
+
 // Cleared pending columns (steady state).
 const CLEAR_PENDING = {
   pending_price_id: null,
@@ -85,7 +103,7 @@ Deno.serve(async (req) => {
 
     const { data: row, error: rowError } = await serviceClient
       .from('creator_subscriptions')
-      .select('id, subscriber_id, status, stripe_subscription_id, pending_status, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency')
+      .select('id, subscriber_id, creator_id, status, stripe_subscription_id, pending_status, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency')
       .eq('id', subscription_id)
       .maybeSingle()
     if (rowError) return json(500, { error: 'Failed to load subscription', details: rowError.message })
@@ -96,6 +114,15 @@ Deno.serve(async (req) => {
 
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
     if (!stripeKey) return json(500, { error: 'STRIPE_SECRET_KEY not configured' })
+
+    // Creator + subscriber display info for the notice email (one query, both ids).
+    const { data: people } = await serviceClient
+      .from('users')
+      .select('auth_user_id, email, display_name')
+      .in('auth_user_id', [row.creator_id, row.subscriber_id])
+    const creatorName = people?.find((p) => p.auth_user_id === row.creator_id)?.display_name || 'A creator'
+    const subUser = people?.find((p) => p.auth_user_id === row.subscriber_id)
+    const subscribers = subUser ? [{ id: subUser.auth_user_id, email: subUser.email, name: subUser.display_name }] : []
 
     if (action === 'accept') {
       // Swap the subscription item's price. Stripe needs the existing item id, so
@@ -130,6 +157,15 @@ Deno.serve(async (req) => {
         console.error('[confirm-price-change] row update (accept) failed', saveError)
         return json(500, { error: 'Stripe updated but failed to save', details: saveError.message })
       }
+      await notify({
+        event: 'price_change_accepted',
+        creator_id: row.creator_id,
+        creator_name: creatorName,
+        new_amount_cents: row.pending_amount_cents,
+        currency: row.pending_currency,
+        renews_on: toIso(upd.data?.current_period_end),
+        subscribers,
+      })
       return json(200, { accepted: true, amount_cents: row.pending_amount_cents, currency: row.pending_currency })
     }
 
@@ -150,6 +186,15 @@ Deno.serve(async (req) => {
         console.error('[confirm-price-change] row update (decline/cancel) failed', saveError)
         return json(500, { error: 'Stripe canceled but failed to save', details: saveError.message })
       }
+      await notify({
+        event: 'price_change_ending',
+        creator_id: row.creator_id,
+        creator_name: creatorName,
+        new_amount_cents: row.pending_amount_cents,
+        currency: row.pending_currency,
+        end_date: toIso(cancel.data?.current_period_end),
+        subscribers,
+      })
       return json(200, { declined: true, fallback: 'cancel', cancel_at_period_end: true })
     }
 

@@ -62,6 +62,18 @@ async function notify(payload: Record<string, unknown>) {
   }
 }
 
+// Record this subscriber's outcome against the change "campaign" so the creator
+// can see "N of M accepted". Idempotent (unique change_id+subscription_id).
+// No-op if the sub wasn't part of a tracked change. Never fatal.
+async function recordOutcome(client: any, row: any, outcome: 'accepted' | 'kept_old' | 'canceled') {
+  if (!row.pending_change_id) return
+  const { error } = await client.from('subscription_price_change_results').upsert(
+    { change_id: row.pending_change_id, subscription_id: row.id, subscriber_id: row.subscriber_id, outcome },
+    { onConflict: 'change_id,subscription_id', ignoreDuplicates: true }
+  )
+  if (error) console.error('[confirm-price-change] outcome record failed', error)
+}
+
 // Cleared pending columns (steady state).
 const CLEAR_PENDING = {
   pending_price_id: null,
@@ -71,6 +83,7 @@ const CLEAR_PENDING = {
   pending_fallback: null,
   pending_deadline: null,
   pending_status: null,
+  pending_change_id: null,
 }
 
 Deno.serve(async (req) => {
@@ -103,7 +116,7 @@ Deno.serve(async (req) => {
 
     const { data: row, error: rowError } = await serviceClient
       .from('creator_subscriptions')
-      .select('id, subscriber_id, creator_id, status, stripe_subscription_id, pending_status, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency')
+      .select('id, subscriber_id, creator_id, status, stripe_subscription_id, pending_status, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency, pending_change_id')
       .eq('id', subscription_id)
       .maybeSingle()
     if (rowError) return json(500, { error: 'Failed to load subscription', details: rowError.message })
@@ -157,6 +170,7 @@ Deno.serve(async (req) => {
         console.error('[confirm-price-change] row update (accept) failed', saveError)
         return json(500, { error: 'Stripe updated but failed to save', details: saveError.message })
       }
+      await recordOutcome(serviceClient, row, 'accepted')
       await notify({
         event: 'price_change_accepted',
         creator_id: row.creator_id,
@@ -186,6 +200,7 @@ Deno.serve(async (req) => {
         console.error('[confirm-price-change] row update (decline/cancel) failed', saveError)
         return json(500, { error: 'Stripe canceled but failed to save', details: saveError.message })
       }
+      await recordOutcome(serviceClient, row, 'canceled')
       await notify({
         event: 'price_change_ending',
         creator_id: row.creator_id,
@@ -208,6 +223,7 @@ Deno.serve(async (req) => {
       console.error('[confirm-price-change] row update (decline/keep) failed', saveError)
       return json(500, { error: 'Failed to clear pending change', details: saveError.message })
     }
+    await recordOutcome(serviceClient, row, 'kept_old')
     return json(200, { declined: true, fallback: 'keep_old' })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

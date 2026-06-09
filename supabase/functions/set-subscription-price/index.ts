@@ -177,6 +177,25 @@ Deno.serve(async (req) => {
       return json(500, { error: 'Failed to save price', details: updateError.message })
     }
 
+    // Mirror the new Stripe Price locally (price history + a stable id to match
+    // Stripe). Deactivate the prior active price first — one active per creator.
+    // Non-fatal: a mirror failure must not block the price save.
+    await serviceClient
+      .from('subscription_prices')
+      .update({ is_active: false })
+      .eq('creator_id', user.id)
+      .eq('is_active', true)
+    const { error: mirrorError } = await serviceClient.from('subscription_prices').insert({
+      creator_id: user.id,
+      stripe_price_id: price.data.id,
+      stripe_product_id: productId,
+      amount_cents: amountCents,
+      currency,
+      interval: 'month',
+      is_active: true,
+    })
+    if (mirrorError) console.error('[set-subscription-price] price mirror failed', mirrorError)
+
     // ── Existing-subscriber migration (§13) ────────────────────────────────
     // Only when there was a prior price in the SAME currency and the amount
     // actually changed. First-time setup or a currency change → new subscribers
@@ -217,6 +236,37 @@ Deno.serve(async (req) => {
         return json(500, { error: 'Price saved, but failed to migrate existing subscribers', details: stampError.message })
       }
       affectedCount = stamped?.length ?? 0
+
+      // Record the change "campaign" + link each stamped sub to it, so the
+      // accept/decline outcome can be tallied later ("N of M accepted"). Only
+      // when subs were actually migrated. Non-fatal.
+      if (affectedCount > 0) {
+        const { data: change, error: changeErr } = await serviceClient
+          .from('subscription_price_changes')
+          .insert({
+            creator_id: user.id,
+            from_price_id: creator.stripe_subscription_price_id ?? null,
+            to_price_id: price.data.id,
+            from_amount_cents: prevAmount,
+            to_amount_cents: amountCents,
+            currency,
+            kind: changeKind,
+            fallback: changeKind === 'increase' ? fallback : null,
+            notice_days: changeKind === 'increase' ? noticeDays : null,
+            deadline: pending.pending_deadline,
+            affected_count: affectedCount,
+          })
+          .select('id')
+          .single()
+        if (changeErr) {
+          console.error('[set-subscription-price] change-log insert failed', changeErr)
+        } else if (change) {
+          await serviceClient
+            .from('creator_subscriptions')
+            .update({ pending_change_id: change.id })
+            .in('id', (stamped ?? []).map((s) => s.id))
+        }
+      }
 
       // Fire-and-forget notice to n8n (which owns email). No-op until the
       // N8N_PRICE_CHANGE_WEBHOOK_URL secret is set (phase 5). Never fatal.

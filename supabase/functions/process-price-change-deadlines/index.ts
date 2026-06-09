@@ -64,6 +64,18 @@ const CLEAR_PENDING = {
   pending_fallback: null,
   pending_deadline: null,
   pending_status: null,
+  pending_change_id: null,
+}
+
+// Record a swept sub's outcome against its change "campaign" (for the creator's
+// "N of M accepted" tally). Idempotent; no-op if untracked. Never fatal.
+async function recordOutcome(client: any, row: any, outcome: 'accepted' | 'kept_old' | 'canceled') {
+  if (!row.pending_change_id) return
+  const { error } = await client.from('subscription_price_change_results').upsert(
+    { change_id: row.pending_change_id, subscription_id: row.id, subscriber_id: row.subscriber_id, outcome },
+    { onConflict: 'change_id,subscription_id', ignoreDuplicates: true }
+  )
+  if (error) console.error('[deadlines] outcome record failed', error)
 }
 
 const BATCH_LIMIT = 500
@@ -102,7 +114,7 @@ Deno.serve(async (req) => {
 
     const { data: due, error: dueError } = await serviceClient
       .from('creator_subscriptions')
-      .select('id, subscriber_id, creator_id, status, stripe_subscription_id, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency')
+      .select('id, subscriber_id, creator_id, status, stripe_subscription_id, pending_kind, pending_fallback, pending_price_id, pending_amount_cents, pending_currency, pending_change_id')
       .eq('pending_status', 'pending')
       .lte('pending_deadline', new Date().toISOString())
       .limit(BATCH_LIMIT)
@@ -142,6 +154,7 @@ Deno.serve(async (req) => {
             end_date: toIso(cancel.data?.current_period_end),
             subscribers: subUser ? [{ id: subUser.auth_user_id, email: subUser.email, name: subUser.display_name }] : [],
           })
+          await recordOutcome(serviceClient, row, 'canceled')
           summary.canceled++
         } else if (row.pending_kind === 'decrease') {
           // Auto-apply the lower price at next renewal.
@@ -157,10 +170,12 @@ Deno.serve(async (req) => {
           await serviceClient.from('creator_subscriptions')
             .update({ amount_cents: row.pending_amount_cents, currency: row.pending_currency, ...CLEAR_PENDING })
             .eq('id', row.id)
+          await recordOutcome(serviceClient, row, 'accepted')
           summary.applied_decrease++
         } else {
           // increase + keep_old (or any other case): keep the current price.
           await serviceClient.from('creator_subscriptions').update({ ...CLEAR_PENDING }).eq('id', row.id)
+          await recordOutcome(serviceClient, row, 'kept_old')
           summary.kept_old++
         }
         summary.processed++

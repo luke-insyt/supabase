@@ -102,6 +102,9 @@ Deno.serve(async (req) => {
     if (!Number.isInteger(noticeDays) || noticeDays < MIN_NOTICE_DAYS || noticeDays > MAX_NOTICE_DAYS) {
       return json(400, { error: `notice_days must be an integer between ${MIN_NOTICE_DAYS} and ${MAX_NOTICE_DAYS}` })
     }
+    // Optional personal note from the creator, included in the subscriber email.
+    // Trimmed + capped; kept as plain text (n8n HTML-escapes it before sending).
+    const message = payload.message == null ? '' : String(payload.message).trim().slice(0, 500)
 
     const userClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -292,6 +295,7 @@ Deno.serve(async (req) => {
                 currency,
                 fallback: pending.pending_fallback,
                 deadline: pending.pending_deadline,
+                message,
                 subscribers: (subUsers ?? []).map((u) => ({
                   id: u.auth_user_id,
                   email: u.email,

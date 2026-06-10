@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
     // the lookup pattern in get-insyt-content).
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, creator_email, price_eur')
+      .select('id, creator_email, price_eur, creator_auth_user_id')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -110,7 +110,9 @@ Deno.serve(async (req) => {
 
     // Free insyts (price_eur = 0) are readable by any authenticated user, so
     // they're rateable without a purchase row — mirror get-insyt-content's
-    // access model. Paid insyts still require a purchase.
+    // access model. Paid insyts require a purchase OR an active subscription to
+    // the creator (subscribers read every insyt by that creator, so they may
+    // rate them too — same access model as get-insyt-content).
     const isFree = Number(insyt.price_eur) === 0
     if (!isFree) {
       // Purchase check — same shape as get-insyt-content's purchase branch.
@@ -120,12 +122,27 @@ Deno.serve(async (req) => {
         .eq('buyer_email', user.email)
         .eq('insyt_id', insyt_id)
         .maybeSingle()
-
       if (purchaseError) {
         return json(500, { error: 'purchases_query_failed', details: purchaseError.message })
       }
-      if (!purchase) {
-        return json(403, { error: 'not_eligible', reason: 'purchase_required' })
+
+      let eligible = !!purchase
+      // No purchase? An active subscription to this insyt's creator also grants it.
+      if (!eligible && insyt.creator_auth_user_id) {
+        const { data: sub, error: subError } = await serviceClient
+          .from('creator_subscriptions')
+          .select('id')
+          .eq('subscriber_id', user.id)
+          .eq('creator_id', insyt.creator_auth_user_id)
+          .in('status', ['active', 'trialing', 'past_due'])
+          .maybeSingle()
+        if (subError) {
+          return json(500, { error: 'subscription_query_failed', details: subError.message })
+        }
+        eligible = !!sub
+      }
+      if (!eligible) {
+        return json(403, { error: 'not_eligible', reason: 'purchase_or_subscription_required' })
       }
     }
 

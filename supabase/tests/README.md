@@ -33,3 +33,17 @@ decrease/cancel branches. To add:
 4. Teardown: cancel/delete the Stripe sub + customer + test clock.
 
 Note: each run creates harmless Stripe **test-mode** Price objects (not cleaned up).
+
+## rating_subscriber_test.py — subscribers can rate paid insyts (§ ratings)
+
+Verifies the `submit-insyt-rating` eligibility change (2026-06-10): a paid insyt
+is rateable by a purchaser **or** an active subscriber to the creator. Creates a
+throwaway user, asserts **403 before** subscribing → **200 after**, and that the
+rating row lands; self-cleaning (deleting the user cascades the sub + rating, and
+the aggregate trigger recomputes). 4 assertions; verified green.
+
+```bash
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> \
+  python3 supabase/tests/rating_subscriber_test.py
+```
+Override `RATING_CREATOR_ID` / `RATING_INSYT_ID` to target a different paid insyt.

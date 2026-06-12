@@ -66,10 +66,26 @@ Deno.serve(async (req) => {
     // requiring them to "buy" their own content. Body/video are needed for
     // both the creator and a paying buyer, so this query is not wasted in
     // either branch.
+    //
+    // Drift hardening (TECH-DEBT §5.3): accept ANY of the row's identifiers —
+    // the canonical varchar insyt_id (public slug), the Webflow-internal
+    // webflow_item_id, or the uuid PK. CMS ↔ Supabase drift means a detail
+    // page sometimes holds one but not the other; matching all of them turns
+    // those 404s into working pages. The input is stripped to slug-safe chars
+    // first so it can't smuggle PostgREST .or() syntax.
+    const idSafe = String(insyt_id).replace(/[^A-Za-z0-9_-]/g, '')
+    if (!idSafe) {
+      return json(404, { error: 'Insyt not found', insyt_id })
+    }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idSafe)
+    const idMatch =
+      `insyt_id.eq.${idSafe},webflow_item_id.eq.${idSafe}` + (isUuid ? `,id.eq.${idSafe}` : '')
+
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, body_html, video_url, creator_email, price_eur, creator_auth_user_id')
-      .eq('insyt_id', insyt_id)
+      .select('id, insyt_id, body_html, video_url, creator_email, price_eur, creator_auth_user_id')
+      .or(idMatch)
+      .limit(1)
       .maybeSingle()
 
     if (insytError) {
@@ -91,11 +107,14 @@ Deno.serve(async (req) => {
     // active subscription to the creator. Free + creator paths leave both false.
     let viaSubscription = false
     if (!isCreator && !isFree) {
+      // Purchases are keyed on the canonical insyts.insyt_id — use the value
+      // from the row we just matched (NOT the raw client input, which may have
+      // been the webflow_item_id or uuid alias).
       const { data: purchase, error: purchaseError } = await serviceClient
         .from('purchases')
         .select('id')
         .eq('buyer_email', user.email)
-        .eq('insyt_id', insyt_id)
+        .eq('insyt_id', insyt.insyt_id ?? insyt_id)
         .maybeSingle()
 
       if (purchaseError) {

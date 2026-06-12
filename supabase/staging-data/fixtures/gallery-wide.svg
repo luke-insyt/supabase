@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#103040"/>
+      <stop offset="100%" stop-color="#2a4a60"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#g)"/>
+  <rect x="200" y="200" width="1200" height="500" fill="none" stroke="rgba(237,171,24,0.6)" stroke-width="6" stroke-dasharray="20 14"/>
+  <text x="800" y="470" font-family="Helvetica,Arial,sans-serif" font-size="60" font-weight="700" fill="#ffffff" text-anchor="middle">gallery wide</text>
+  <text x="800" y="520" font-family="Helvetica,Arial,sans-serif" font-size="22" fill="rgba(255,255,255,0.7)" text-anchor="middle">16:9 — landscape gallery slot</text>
+</svg>

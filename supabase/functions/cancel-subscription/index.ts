@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { withLogging } from '../_shared/log.ts'
 
 // Cancel the signed-in user's subscription to a creator AT PERIOD END (they keep
 // access until the paid period ends, then it doesn't renew). Replaces the Stripe
@@ -18,7 +19,7 @@ const json = (status: number, body: unknown) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-Deno.serve(async (req) => {
+Deno.serve(withLogging('cancel-subscription', corsHeaders, async (req, log) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
@@ -74,8 +75,8 @@ Deno.serve(async (req) => {
     )
     const stripeSub = await resp.json()
     if (!resp.ok) {
-      console.error('[cancel-subscription] Stripe error', stripeSub)
-      return json(resp.status, { error: 'Stripe error', details: stripeSub })
+      log.error('Stripe error', { status: resp.status, details: stripeSub })
+      return json(resp.status, { error: 'Stripe error', details: stripeSub, reqId: log.reqId })
     }
 
     // Optimistically reflect the change locally; the Stripe webhook (n8n) is the
@@ -89,7 +90,7 @@ Deno.serve(async (req) => {
     return json(200, { ok: true, cancel_at_period_end: cancel, current_period_end: periodEnd })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error('[cancel-subscription] Unhandled error:', message)
-    return json(500, { error: 'Internal server error', details: message })
+    log.error('unhandled', { err: message })
+    return json(500, { error: 'Internal server error', details: message, reqId: log.reqId })
   }
-})
+}))

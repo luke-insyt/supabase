@@ -2,6 +2,7 @@
 // creator + payload, then forwards "submit" to the n8n pipeline with a
 // shared secret. See get-upload-url for the matching upload-URL issuer.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { withLogging } from '../_shared/log.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -49,7 +50,7 @@ const N8N_SECRET           = (Deno.env.get('CREATE_INSYT_N8N_SECRET') || '').tri
 
 const uuidRe = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 
-Deno.serve(async (req) => {
+Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -191,7 +192,8 @@ Deno.serve(async (req) => {
       body: JSON.stringify(forwardBody),
     })
   } catch (err) {
-    return json(502, { error: `Failed to reach n8n: ${(err as Error).message}` })
+    log.error('n8n unreachable', { err: (err as Error).message })
+    return json(502, { error: `Failed to reach n8n: ${(err as Error).message}`, reqId: log.reqId })
   }
 
   const n8nText = await n8nResp.text()
@@ -199,7 +201,8 @@ Deno.serve(async (req) => {
   try { n8nBody = JSON.parse(n8nText) } catch { /* keep as text */ }
 
   if (!n8nResp.ok) {
-    return json(502, { error: 'n8n rejected the submission', detail: n8nBody })
+    log.error('n8n rejected the submission', { status: n8nResp.status, detail: n8nBody })
+    return json(502, { error: 'n8n rejected the submission', detail: n8nBody, reqId: log.reqId })
   }
 
   return json(200, {
@@ -207,7 +210,7 @@ Deno.serve(async (req) => {
     correlation_id,
     n8n: n8nBody,
   })
-})
+}))
 
 async function loadDraft(svc: ReturnType<typeof createClient>, creatorEmail: string) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()

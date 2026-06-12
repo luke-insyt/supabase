@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { withLogging } from '../_shared/log.ts'
 
 // Start an embedded Stripe Checkout session in subscription mode, so the
 // signed-in user can subscribe to a creator. Mirrors create-checkout-session
@@ -23,7 +24,7 @@ const json = (status: number, body: unknown) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-Deno.serve(async (req) => {
+Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, async (req, log) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -111,8 +112,8 @@ Deno.serve(async (req) => {
     })
     const session = await resp.json()
     if (!resp.ok) {
-      console.error('[create-subscription-checkout-session] Stripe error', session)
-      return json(resp.status, { error: 'Stripe error', details: session })
+      log.error('Stripe error', { status: resp.status, details: session })
+      return json(resp.status, { error: 'Stripe error', details: session, reqId: log.reqId })
     }
 
     return json(200, {
@@ -121,7 +122,7 @@ Deno.serve(async (req) => {
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error('[create-subscription-checkout-session] Unhandled error:', message)
-    return json(500, { error: 'Internal server error', details: message })
+    log.error('unhandled', { err: message })
+    return json(500, { error: 'Internal server error', details: message, reqId: log.reqId })
   }
-})
+}))

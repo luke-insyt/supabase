@@ -25,8 +25,9 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) return json(401, { error: 'Missing Authorization header' })
 
-    const { creator_id } = await req.json().catch(() => ({}))
+    const { creator_id, resume } = await req.json().catch(() => ({}))
     if (!creator_id) return json(400, { error: 'Missing creator_id' })
+    const cancel = !resume // resume:true un-cancels (keeps the subscription renewing)
 
     const userClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -57,9 +58,9 @@ Deno.serve(async (req) => {
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
     if (!stripeKey) return json(500, { error: 'STRIPE_SECRET_KEY not configured' })
 
-    // Stripe: schedule cancellation at the end of the current paid period.
+    // Stripe: toggle cancellation at the end of the current paid period.
     const form = new URLSearchParams()
-    form.set('cancel_at_period_end', 'true')
+    form.set('cancel_at_period_end', cancel ? 'true' : 'false')
     const resp = await fetch(
       'https://api.stripe.com/v1/subscriptions/' + encodeURIComponent(sub.stripe_subscription_id),
       {
@@ -81,11 +82,11 @@ Deno.serve(async (req) => {
     // source of truth and will reconcile status/period on its own.
     await serviceClient
       .from('creator_subscriptions')
-      .update({ cancel_at_period_end: true })
+      .update({ cancel_at_period_end: cancel })
       .eq('id', sub.id)
 
     const periodEnd = stripeSub.current_period_end ?? sub.current_period_end ?? null
-    return json(200, { ok: true, cancel_at_period_end: true, current_period_end: periodEnd })
+    return json(200, { ok: true, cancel_at_period_end: cancel, current_period_end: periodEnd })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[cancel-subscription] Unhandled error:', message)

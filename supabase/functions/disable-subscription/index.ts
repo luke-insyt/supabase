@@ -175,7 +175,7 @@ Deno.serve(async (req) => {
     // ── Process existing subscribers (only those not yet stamped this campaign) ─
     const { data: liveSubs, error: subsErr } = await serviceClient
       .from('creator_subscriptions')
-      .select('id, subscriber_id, stripe_subscription_id, status')
+      .select('id, subscriber_id, stripe_subscription_id, status, current_period_end')
       .eq('creator_id', user.id)
       .in('status', ['active', 'trialing'])
     if (subsErr) return json(500, { error: 'Failed to load subscribers', details: subsErr.message })
@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
     const doneIds = new Set((done ?? []).map((r) => r.subscription_id as string))
     const todo = (liveSubs ?? []).filter((s) => !doneIds.has(s.id as string))
 
-    const notifiedSubscriberIds: string[] = []
+    const notifiedSubs: { subscriber_id: string; end_date: string | null }[] = []
     for (const sub of todo) {
       if (fallback === 'cancel') {
         const subId = sub.stripe_subscription_id as string | null
@@ -205,7 +205,10 @@ Deno.serve(async (req) => {
           .from('creator_subscriptions')
           .update({ cancel_at_period_end: true, cancel_reason: 'creator_disabled', updated_at: new Date().toISOString() })
           .eq('id', sub.id)
-        notifiedSubscriberIds.push(sub.subscriber_id as string)
+        notifiedSubs.push({
+          subscriber_id: sub.subscriber_id as string,
+          end_date: (sub.current_period_end as string | null) ?? null,
+        })
       }
       // Record the outcome AFTER the Stripe call so a failure leaves it for retry.
       await serviceClient
@@ -230,14 +233,21 @@ Deno.serve(async (req) => {
       .eq('id', campaignId)
 
     // ── Notify subscribers (cancel path only) — fire-and-forget to n8n ────────
-    if (fallback === 'cancel' && notifiedSubscriberIds.length > 0) {
+    if (fallback === 'cancel' && notifiedSubs.length > 0) {
       const notifyUrl = Deno.env.get('N8N_PRICE_CHANGE_WEBHOOK_URL')
       if (notifyUrl) {
         try {
+          const endBySub: Record<string, string | null> = {}
+          notifiedSubs.forEach((s) => {
+            endBySub[s.subscriber_id] = s.end_date
+          })
           const { data: subUsers } = await serviceClient
             .from('users')
             .select('auth_user_id, email, display_name')
-            .in('auth_user_id', notifiedSubscriberIds)
+            .in(
+              'auth_user_id',
+              notifiedSubs.map((s) => s.subscriber_id)
+            )
           await fetch(notifyUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -251,6 +261,7 @@ Deno.serve(async (req) => {
                 id: u.auth_user_id,
                 email: u.email,
                 name: u.display_name,
+                end_date: endBySub[u.auth_user_id as string] ?? null,
               })),
             }),
           })

@@ -287,6 +287,7 @@ Deno.serve(async (req) => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 event: 'subscription_price_change',
+                env: (Deno.env.get('SUPABASE_URL') ?? '').includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging',
                 kind: changeKind,
                 creator_id: user.id,
                 creator_name: creator.display_name,

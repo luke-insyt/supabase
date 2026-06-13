@@ -253,6 +253,7 @@ Deno.serve(async (req) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               event: 'subscription_disabled',
+              env: (Deno.env.get('SUPABASE_URL') ?? '').includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging',
               creator_id: user.id,
               creator_name: creator.display_name,
               currency: prevCurrency,

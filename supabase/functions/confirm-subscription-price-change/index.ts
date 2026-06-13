@@ -173,6 +173,7 @@ Deno.serve(async (req) => {
       await recordOutcome(serviceClient, row, 'accepted')
       await notify({
         event: 'price_change_accepted',
+        env: (Deno.env.get('SUPABASE_URL') ?? '').includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging',
         creator_id: row.creator_id,
         creator_name: creatorName,
         new_amount_cents: row.pending_amount_cents,
@@ -203,6 +204,7 @@ Deno.serve(async (req) => {
       await recordOutcome(serviceClient, row, 'canceled')
       await notify({
         event: 'price_change_ending',
+        env: (Deno.env.get('SUPABASE_URL') ?? '').includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging',
         creator_id: row.creator_id,
         creator_name: creatorName,
         new_amount_cents: row.pending_amount_cents,

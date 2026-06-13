@@ -150,6 +150,7 @@ Deno.serve(async (req) => {
           const subUser = people?.find((p) => p.auth_user_id === row.subscriber_id)
           await notify({
             event: 'price_change_ending',
+            env: (Deno.env.get('SUPABASE_URL') ?? '').includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging',
             creator_id: row.creator_id,
             creator_name: people?.find((p) => p.auth_user_id === row.creator_id)?.display_name || 'A creator',
             new_amount_cents: row.pending_amount_cents,

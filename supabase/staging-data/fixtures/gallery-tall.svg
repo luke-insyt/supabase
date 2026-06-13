@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3a1535"/>
+      <stop offset="100%" stop-color="#edab18"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="1200" fill="url(#g)"/>
+  <rect x="100" y="180" width="700" height="840" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="6" stroke-dasharray="20 14"/>
+  <text x="450" y="610" font-family="Helvetica,Arial,sans-serif" font-size="60" font-weight="700" fill="#ffffff" text-anchor="middle">gallery tall</text>
+  <text x="450" y="660" font-family="Helvetica,Arial,sans-serif" font-size="22" fill="rgba(255,255,255,0.75)" text-anchor="middle">3:4 — portrait gallery slot</text>
+</svg>

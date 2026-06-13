@@ -1,0 +1,2 @@
+ALTER TABLE public.users
+ALTER COLUMN id DROP DEFAULT;

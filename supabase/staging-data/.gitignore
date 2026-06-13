@@ -1,0 +1,4 @@
+.env
+.env.local
+assets/
+.DS_Store

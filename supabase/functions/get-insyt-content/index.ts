@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
 
     const userClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_ANON_KEY')!,
+      Deno.env.get('SB_PUBLISHABLE')!,
       { global: { headers: { Authorization: authHeader } } }
     )
 
@@ -59,7 +59,7 @@ Deno.serve(async (req) => {
 
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      Deno.env.get('SB_SERVICE_SECRET')!
     )
 
     // Fetch the insyt first so we can grant access to its creator without

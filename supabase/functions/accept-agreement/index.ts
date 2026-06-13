@@ -22,7 +22,7 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      Deno.env.get('SB_SERVICE_SECRET')!
     )
 
     const { data: userRow, error: userLookupError } = await supabase

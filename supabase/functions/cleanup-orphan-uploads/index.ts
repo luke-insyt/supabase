@@ -26,11 +26,16 @@ const json = (status: number, body: unknown) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-// Gate on the decoded service_role claim — never exact-match the key string
-// (new API-key formats make the injected env differ from legacy JWTs).
+// Accept either auth shape (both valid while the legacy keys stay enabled):
+//  - the new non-JWT secret key (sb_secret_…) — exact match against SB_SERVICE_SECRET
+//  - a legacy service_role JWT — decode + check the role claim
+// Never exact-match SB_SERVICE_SECRET: the injected env value and the
+// legacy JWT n8n holds can both be valid yet differ byte-for-byte.
 function isServiceRole(authHeader: string | null): boolean {
   if (!authHeader) return false
   const token = authHeader.replace(/^Bearer\s+/i, '')
+  const newSecret = Deno.env.get('SB_SERVICE_SECRET')
+  if (newSecret && token === newSecret) return true
   const parts = token.split('.')
   if (parts.length !== 3) return false
   try {
@@ -63,7 +68,7 @@ Deno.serve(async (req) => {
 
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      Deno.env.get('SB_SERVICE_SECRET')!
     )
 
     const { data: orphans, error: rpcError } = await serviceClient.rpc(

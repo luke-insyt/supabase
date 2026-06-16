@@ -46,13 +46,20 @@ Deno.serve(async (req) => {
       Deno.env.get('SB_PUBLISHABLE')!,
       { global: { headers: { Authorization: authHeader } } }
     )
-    const {
-      data: { user },
-      error: userError,
-    } = await userClient.auth.getUser()
-    if (userError || !user) return json(401, { error: 'Invalid or expired token' })
+    // Validate the caller by the token's verified CLAIMS (signature via JWKS), not a
+    // session lookup. getUser()/auth/v1/user reject a still-valid token whose server
+    // session was rotated/evicted ("session_not_found") — getClaims only checks the
+    // signature, so it's correct for both real logins and the e2e's cached tokens.
+    const token = authHeader.replace(/^Bearer\s+/i, '')
+    const { data: claimsData, error: claimsError } = await userClient.auth.getClaims(token)
+    const claims = claimsData && (claimsData.claims as Record<string, unknown> | undefined)
+    if (claimsError || !claims || !claims.sub) {
+      return json(401, { error: 'Invalid or expired token' })
+    }
 
-    const callerEmail = (user.email || '').trim().toLowerCase()
+    const callerEmail = String((claims.email as string) || '')
+      .trim()
+      .toLowerCase()
     if (!callerEmail) return json(403, { error: 'No email on the caller account' })
 
     const serviceClient = createClient(

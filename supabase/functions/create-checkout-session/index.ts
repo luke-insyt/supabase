@@ -81,6 +81,11 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     if (insyt.creator_email) {
       form.set('metadata[creator_email]', insyt.creator_email)
     }
+    // Show Stripe's native "Add promotion code" field in the embedded checkout.
+    // Codes resolve against coupons created in the Stripe dashboard (e.g. a
+    // 100%-off coupon for prod smoke-testing — Tax is computed on the
+    // post-discount total, so $0 subtotal → $0 tax).
+    form.set('allow_promotion_codes', 'true')
     // Keep the buyer in our modal: Stripe will not redirect; we close the
     // modal client-side on `onComplete` and poll get-insyt-content. Stripe
     // rejects `return_url` when `redirect_on_completion` is `never`, so we

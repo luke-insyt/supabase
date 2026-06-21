@@ -21,7 +21,7 @@ type Action = 'save_draft' | 'submit' | 'discard' | 'load_draft' | 'list_drafts'
 type Attachment = {
   bucket: string
   path: string
-  kind: 'thumbnail' | 'image' | 'video'
+  kind: 'thumbnail' | 'image' | 'video' | 'pdf'
   filename?: string
   mime?: string
   size_bytes?: number
@@ -43,6 +43,7 @@ type Payload = {
   cover?: Attachment | null
   images?: Attachment[]
   videos?: Attachment[]
+  pdfs?: Attachment[]
 }
 
 const N8N_CREATE_INSYT_URL = (Deno.env.get('N8N_CREATE_INSYT_URL') || '').trim()
@@ -132,6 +133,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
     ...(payload.cover ? [payload.cover] : []),
     ...(payload.images || []),
     ...(payload.videos || []),
+    ...(payload.pdfs || []),
   ]
   const expectedPrefix = `${authUserId}/${correlation_id}/`
   for (const a of allAttachments) {
@@ -179,6 +181,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
     cover: payload.cover || null,
     images: payload.images || [],
     videos: payload.videos || [],
+    pdfs: payload.pdfs || [],
   }
 
   let n8nResp: Response
@@ -347,6 +350,7 @@ async function saveDraft(
     ...(payload.cover ? [{ ...payload.cover, kind: 'thumbnail' as const, position: 0 }] : []),
     ...((payload.images || []).map((a, i) => ({ ...a, kind: 'image' as const, position: i + 1 }))),
     ...((payload.videos || []).map((a, i) => ({ ...a, kind: 'video' as const, position: i + 1 }))),
+    ...((payload.pdfs || []).map((a, i) => ({ ...a, kind: 'pdf' as const, position: i + 1 }))),
   ]
 
   if (atts.length > 0) {

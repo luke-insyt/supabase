@@ -15,18 +15,20 @@ const json = (status: number, body: unknown) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-type Role = 'cover' | 'image' | 'video'
+type Role = 'cover' | 'image' | 'video' | 'pdf'
 
 const ROLE_BUCKETS: Record<Role, string> = {
   cover: 'insyt-thumbnails',
   image: 'insyt-images',
   video: 'insyt-videos',
+  pdf: 'insyt-pdfs',
 }
 
 const ROLE_MAX_BYTES: Record<Role, number> = {
   cover: 5  * 1024 * 1024,
   image: 10 * 1024 * 1024,
   video: 100 * 1024 * 1024,
+  pdf: 20 * 1024 * 1024,
 }
 
 function safeName(name: string): string {

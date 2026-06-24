@@ -163,6 +163,35 @@ export const TEST_USERS = [
     },
     socials: [],
   },
+  {
+    // GET-75: a dedicated creator that OFFERS a subscription, so the subscribe
+    // CTA renders on their paid insyts in e2e — without depending on the real
+    // anchor account. The price id below is a PLACEHOLDER (option B): the CTA
+    // renders (creator_subscription_offer returns a row because the price id is
+    // non-null), but clicking Subscribe will NOT reach a real Stripe checkout.
+    // Swap in a real sk_test subscription Price id for clickable coverage.
+    email: 'seed-creator-subscription@getinsyts.test',
+    persona: 'subscription-creator',
+    profile: {
+      display_name: 'Subscription Creator',
+      username: 'subcreator',
+      headline: 'Offers a monthly subscription',
+      bio: 'Has a subscription offer set up so the subscribe CTA renders on their paid insyts (GET-75).',
+      location: null,
+      website: null,
+      is_creator: true,
+      sports: ['Basketball'],
+      content_types: ['Player Report'],
+      // Subscription offer (the four fields creator_subscription_offer reads):
+      subscription_price_usd: 500, // cents → €5.00/mo
+      subscription_currency: 'eur',
+      subscription_trial_days: 0,
+      stripe_subscription_price_id: 'price_seed_placeholder_GET75', // PLACEHOLDER (not a real Stripe price)
+      avatar: 'avatar.svg',
+      cover: null,
+    },
+    socials: [],
+  },
 
   // ---- Consumers ----
   {

@@ -5,6 +5,7 @@
 const ANCHOR  = 'lukas.lampe@ll-endeavors.com'
 const FULL    = 'seed-creator-full@getinsyts.test'
 const LONG    = 'seed-creator-long-strings@getinsyts.test'
+const SUBSCRIPTION = 'seed-creator-subscription@getinsyts.test' // GET-75: creator with a subscription offer
 
 const TAGS_BASE = ['training', 'tactics']
 
@@ -286,5 +287,25 @@ export const INSYTS = [
     attachments: [
       { kind: 'image', source: 'gallery-tall.svg', filename: 'tall.svg', position: 1, width: 900, height: 1200 },
     ],
+  },
+  // ---- seed-creator-subscription owns this (GET-75) ----
+  {
+    // Paid insyt by the subscription-offering creator. On the locked state, a
+    // non-purchaser sees BOTH the Buy CTA and the Subscribe CTA (the creator
+    // offers a subscription). This is the positive subscribe-CTA fixture that
+    // does NOT depend on the real anchor account.
+    insyt_id: 'seed-insyt-16-subscription-offer',
+    title: 'Subscription creator — paid insyt',
+    abstract: 'Paid insyt by a creator who offers a monthly subscription; the locked state shows Buy + Subscribe.',
+    body_html: '<p>Paid insyt used to verify the subscribe CTA renders on the locked state for a creator with a subscription offer (GET-75).</p>',
+    price_eur: 1900,
+    read_time_min: 5,
+    creator_email: SUBSCRIPTION,
+    sport: 'basketball',
+    status: 'published',
+    is_hidden: false,
+    tags: TAGS_BASE,
+    has_thumbnail: true,
+    attachments: [],
   },
 ]

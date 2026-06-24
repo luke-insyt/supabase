@@ -114,7 +114,7 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website')
+    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website, hide_location, hide_website, hide_email')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
 
   const { data: socialRows, error: socialErr } = await svc
     .from('user_social_links')
-    .select('platform, handle')
+    .select('platform, handle, hidden')
     .eq('user_id', authUserId)
   if (socialErr) return json(500, { error: socialErr.message })
 
@@ -134,8 +134,9 @@ Deno.serve(async (req) => {
   if (expertiseErr) return json(500, { error: expertiseErr.message })
 
   const socials: Record<SocialPlatform, string> = { youtube: '', instagram: '', facebook: '', tiktok: '' }
-  for (const row of (socialRows || []) as { platform: string; handle: string }[]) {
-    if ((SOCIAL_PLATFORMS as string[]).includes(row.platform)) {
+  for (const row of (socialRows || []) as { platform: string; handle: string; hidden: boolean | null }[]) {
+    // A hidden social stays '' so its Webflow CMS field is overwritten empty -> the pill hides. (GET-68)
+    if ((SOCIAL_PLATFORMS as string[]).includes(row.platform) && !row.hidden) {
       socials[row.platform as SocialPlatform] = (row.handle || '').trim()
     }
   }
@@ -152,8 +153,9 @@ Deno.serve(async (req) => {
   // "Newest insyters" panels bind to it. Fallback chain: display_name →
   // username → email. (#2)
   const displayName = (userRow.display_name || '').trim() || username || email
-  const location = ((userRow.location as string | null) || '').trim()
-  const website = ((userRow.website as string | null) || '').trim()
+  // Hidden fields are pushed empty so the Webflow CMS value is overwritten and the pill hides. (GET-68)
+  const location = (userRow.hide_location as boolean | null) ? '' : ((userRow.location as string | null) || '').trim()
+  const website = (userRow.hide_website as boolean | null) ? '' : ((userRow.website as string | null) || '').trim()
   const profileImage = buildAvatarUrl(
     Deno.env.get('SUPABASE_URL') || '',
     (userRow.profile_image_url as string | null) || null,
@@ -167,7 +169,8 @@ Deno.serve(async (req) => {
   const fields: CreatorFields = {
     name: displayName,
     slug: authUserId,
-    email,
+    // Real email is kept for identity/displayName fallback above; the CMS field is blanked when hidden. (GET-68)
+    email: (userRow.hide_email as boolean | null) ? '' : email,
     'auth-user-id': authUserId,
     bio,
     headline,

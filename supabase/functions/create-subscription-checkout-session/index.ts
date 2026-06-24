@@ -94,6 +94,11 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     form.set('subscription_data[metadata][subscriber_id]', user.id)
     // Stripe Tax (decision #8): calculate/collect VAT per the subscriber.
     form.set('automatic_tax[enabled]', 'true')
+    // Show Stripe's native "Add promotion code" field in the embedded checkout.
+    // Codes resolve against coupons created in the Stripe dashboard (e.g. a
+    // forever 100%-off coupon for prod smoke-testing — Tax is computed on the
+    // post-discount total, so $0 subtotal → $0 tax).
+    form.set('allow_promotion_codes', 'true')
     // Optional free trial (decision #7), only when the creator enabled one.
     const trial = Number(creator.subscription_trial_days)
     if (Number.isInteger(trial) && trial > 0) {

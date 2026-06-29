@@ -46,7 +46,7 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
 
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('insyt_id, stripe_price_id, creator_email, price_eur')
+      .select('insyt_id, stripe_price_id, creator_email, price_eur, title')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
@@ -56,8 +56,25 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     if (!insyt) {
       return json(404, { error: 'Insyt not found' })
     }
+    // `stripe_price_id` presence still gates "published & paid" (free / pending-publish
+    // insyts have none), but it is NOT used for the charge amount — see below.
     if (!insyt.stripe_price_id) {
       return json(409, { error: 'Insyt has no Stripe price (free or pending publish)' })
+    }
+    // GET-98: charge the CURRENT price, not the stale Stripe Price object.
+    // `stripe_price_id` points to an immutable Stripe Price created at publish time;
+    // when a creator lowers the price, `price_eur` is updated (the feed + detail page
+    // read it) but the old Stripe Price is NOT rolled, so charging via `stripe_price_id`
+    // billed the outdated amount. `price_eur` is the single source of truth for the
+    // displayed price, so build the line item from it via ad-hoc `price_data`. Safe
+    // for this one-off flow specifically: it sets NO `automatic_tax` (only the
+    // subscription checkout does), so there's no product tax_code to preserve.
+    // `price_eur` is stored in CENTS (an integer) — the frontend's formatPrice()
+    // divides it by 100 for display, and Stripe's unit_amount is also in cents, so
+    // it maps across 1:1 with NO further scaling. (399 → €3.99.)
+    const amountCents = Math.round(Number(insyt.price_eur))
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      return json(409, { error: 'Insyt has no valid price' })
     }
     if (insyt.creator_email && insyt.creator_email.toLowerCase() === user.email.toLowerCase()) {
       return json(409, { error: 'Creators cannot buy their own insyt' })
@@ -74,7 +91,9 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     const form = new URLSearchParams()
     form.set('ui_mode', 'embedded')
     form.set('mode', 'payment')
-    form.set('line_items[0][price]', insyt.stripe_price_id)
+    form.set('line_items[0][price_data][currency]', 'eur')
+    form.set('line_items[0][price_data][unit_amount]', String(amountCents))
+    form.set('line_items[0][price_data][product_data][name]', insyt.title || 'Insyt')
     form.set('line_items[0][quantity]', '1')
     form.set('customer_email', user.email)
     form.set('metadata[insyt_id]', insyt.insyt_id)

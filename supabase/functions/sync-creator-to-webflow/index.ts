@@ -114,11 +114,31 @@ Deno.serve(async (req) => {
 
   const { data: userRow, error: userErr } = await svc
     .from('users')
-    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website, hide_location, hide_website, hide_email')
+    .select('display_name, bio, headline, profile_image_url, cover_image_url, creator_activated_at, created_at, webflow_creator_id, username, location, website, hide_location, hide_website, hide_email, is_creator, creator_terms_accepted_at')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (userErr) return json(500, { error: userErr.message })
   if (!userRow) return json(404, { error: 'User row not found' })
+
+  // GET-99: promote the user to creator HERE — at profile completion — not at
+  // terms acceptance (accept-agreement no longer sets is_creator). Gate on the real
+  // `display_name` column being set (Decision A: "when no display name is set we
+  // should not mark the user as creator") AND the agreement being signed. Done
+  // server-side (svc/service-role) before the Webflow upsert so a Webflow API hiccup
+  // can't leave the DB un-promoted; idempotent for an already-active creator.
+  const profileDisplayName = ((userRow.display_name as string | null) || '').trim()
+  const agreementSigned = !!(userRow.creator_terms_accepted_at as string | null)
+  if (!userRow.is_creator && profileDisplayName && agreementSigned) {
+    const { error: promoteErr } = await svc
+      .from('users')
+      .update({
+        is_creator: true,
+        creator_activated_at: (userRow.creator_activated_at as string | null) || new Date().toISOString(),
+      })
+      .eq('auth_user_id', authUserId)
+    if (promoteErr) return json(500, { error: 'Failed to activate creator: ' + promoteErr.message })
+    userRow.is_creator = true
+  }
 
   const { data: socialRows, error: socialErr } = await svc
     .from('user_social_links')

@@ -65,10 +65,15 @@ Deno.serve(async (req) => {
       )
     }
 
+    // GET-99: accepting the agreement records the signed terms but does NOT make
+    // the user a creator. `is_creator` is flipped only once the profile is completed
+    // (a display name is saved) — see sync-creator-to-webflow. Accepting terms then
+    // abandoning the Create-Profile step previously left a half-created creator
+    // (nameless in listings, "Create Insyt" shown, profile page 404). (Decision A:
+    // "when no display name is set we should not mark the user as creator.")
     const { error: userError } = await supabase
       .from('users')
       .update({
-        is_creator: true,
         agreement_version: version,
         signature_name,
         signature_ip: ip ?? null,

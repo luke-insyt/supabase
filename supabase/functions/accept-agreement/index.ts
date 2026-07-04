@@ -5,64 +5,87 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
 }
 
+const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const { auth_user_id, email, signature_name, version, ip } = await req.json()
+    // GET-122/SF6: authenticate the caller from their JWT and derive identity FROM THE
+    // TOKEN — never from the request body. This edge fn writes a legally-significant
+    // signed-terms record and stamps creator_terms_accepted_at; without this an
+    // unauthenticated POST (the fn is browser-callable, --no-verify-jwt) could forge an
+    // acceptance for any auth_user_id.
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) return json(401, { error: 'Missing Authorization header' })
 
-    if (!auth_user_id || !email || !signature_name || !version) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required fields' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+    const userClient = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SB_PUBLISHABLE')!,
+      { global: { headers: { Authorization: authHeader } } }
+    )
+    const { data: authResult, error: authError } = await userClient.auth.getUser()
+    if (authError || !authResult?.user) return json(401, { error: 'Invalid session' })
+
+    const authUserId = authResult.user.id
+    const email = authResult.user.email
+    if (!email) return json(401, { error: 'Missing email in token' })
+
+    // Signature details still come from the body; identity does NOT.
+    const body = await req.json().catch(() => ({}))
+    const signature_name = body?.signature_name
+    const version = body?.version
+    const ip = body?.ip
+    if (!signature_name || !version) {
+      return json(400, { error: 'Missing required fields' })
     }
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SB_SERVICE_SECRET')!
-    )
+    const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SB_SERVICE_SECRET')!)
+
+    // You may only sign the CURRENT agreement — reject a stale/forged version so the
+    // acceptance record can't be pinned to arbitrary terms.
+    const { data: currentVersion, error: versionError } = await supabase
+      .from('agreement_versions')
+      .select('version')
+      .eq('is_current', true)
+      .maybeSingle()
+    if (versionError) return json(500, { error: versionError.message })
+    if (!currentVersion || currentVersion.version !== version) {
+      return json(409, { error: 'Not the current agreement version' })
+    }
 
     const { data: userRow, error: userLookupError } = await supabase
       .from('users')
       .select('id')
-      .eq('auth_user_id', auth_user_id)
+      .eq('auth_user_id', authUserId)
       .maybeSingle()
 
     if (userLookupError) {
-      return new Response(
-        JSON.stringify({ error: userLookupError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return json(500, { error: userLookupError.message })
     }
-
     if (!userRow) {
-      return new Response(
-        JSON.stringify({ error: 'User not found' }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return json(404, { error: 'User not found' })
     }
 
     const acceptedAt = new Date().toISOString()
 
-    const { error: acceptanceError } = await supabase
-      .from('agreement_acceptances')
-      .insert({
-        auth_user_id,
-        email,
-        signature_name,
-        version,
-        ip: ip ?? null,
-        accepted_at: acceptedAt,
-      })
+    const { error: acceptanceError } = await supabase.from('agreement_acceptances').insert({
+      auth_user_id: authUserId,
+      email,
+      signature_name,
+      version,
+      ip: ip ?? null,
+      accepted_at: acceptedAt,
+    })
 
     if (acceptanceError) {
-      return new Response(
-        JSON.stringify({ error: acceptanceError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return json(500, { error: acceptanceError.message })
     }
 
     // GET-99: accepting the agreement records the signed terms but does NOT make
@@ -80,23 +103,14 @@ Deno.serve(async (req) => {
         signed_at: acceptedAt,
         creator_terms_accepted_at: acceptedAt,
       })
-      .eq('auth_user_id', auth_user_id)
+      .eq('auth_user_id', authUserId)
 
     if (userError) {
-      return new Response(
-        JSON.stringify({ error: userError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return json(500, { error: userError.message })
     }
 
-    return new Response(
-      JSON.stringify({ success: true }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    return json(200, { success: true })
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: 'Internal server error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    return json(500, { error: 'Internal server error' })
   }
 })

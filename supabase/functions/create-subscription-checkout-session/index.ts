@@ -55,7 +55,9 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
 
     const { data: creator, error: creatorError } = await serviceClient
       .from('users')
-      .select('auth_user_id, stripe_subscription_price_id, subscription_trial_days')
+      .select(
+        'auth_user_id, display_name, stripe_subscription_product_id, stripe_subscription_price_id, subscription_trial_days'
+      )
       .eq('auth_user_id', creator_id)
       .maybeSingle()
     if (creatorError) return json(500, { error: 'Failed to load creator', details: creatorError.message })
@@ -78,6 +80,35 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
 
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
     if (!stripeKey) return json(500, { error: 'STRIPE_SECRET_KEY not configured' })
+
+    // GET-124: the embedded payment window shows the Stripe *product* name. The
+    // subscription product is created once (set-subscription-price) with the
+    // creator's display name and never re-synced, so a creator who renames after
+    // setting their price still shows the OLD name at checkout. Refresh the product
+    // name to the creator's CURRENT display name right before opening the session.
+    // Best-effort: a name-sync hiccup must never block someone from subscribing.
+    if (creator.stripe_subscription_product_id && creator.display_name) {
+      const nameForm = new URLSearchParams()
+      nameForm.set('name', creator.display_name + ' — Subscription')
+      try {
+        const nameResp = await fetch(
+          'https://api.stripe.com/v1/products/' + creator.stripe_subscription_product_id,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer ' + stripeKey,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: nameForm.toString(),
+          }
+        )
+        if (!nameResp.ok) {
+          log.error('product name sync non-ok (non-fatal)', { status: nameResp.status })
+        }
+      } catch (e) {
+        log.error('product name sync failed (non-fatal)', { err: String(e) })
+      }
+    }
 
     const form = new URLSearchParams()
     form.set('ui_mode', 'embedded')

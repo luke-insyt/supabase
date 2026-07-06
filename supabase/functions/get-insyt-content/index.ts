@@ -130,7 +130,7 @@ Deno.serve(async (req) => {
         if (insyt.creator_auth_user_id) {
           const { data: sub, error: subError } = await serviceClient
             .from('creator_subscriptions')
-            .select('id')
+            .select('id, status, current_period_end')
             .eq('subscriber_id', user.id)
             .eq('creator_id', insyt.creator_auth_user_id)
             .in('status', ['active', 'trialing', 'past_due'])
@@ -139,6 +139,20 @@ Deno.serve(async (req) => {
             return json(500, { error: 'Failed to query subscriptions', details: subError.message })
           }
           viaSubscription = !!sub
+          // Defensive expiry guard (GET-133): status is flipped to 'canceled'
+          // by the n8n Stripe webhook — if that webhook lags or fails, a lapsed
+          // row would keep granting access forever on status alone. Allow the
+          // documented 30-day dunning grace past current_period_end (past_due
+          // keeps access during retries, and Stripe cancels after 30 days —
+          // decisions #4/#11), then treat a still-unflipped row as expired.
+          // Client twin: src/lib/subscription-utils.ts — keep the two in sync.
+          const GRACE_MS = 30 * 24 * 60 * 60 * 1000
+          if (sub && sub.current_period_end) {
+            const ends = new Date(sub.current_period_end).getTime()
+            if (Number.isFinite(ends) && ends + GRACE_MS < Date.now()) {
+              viaSubscription = false
+            }
+          }
         }
         if (!viaSubscription) {
           return json(403, { error: 'No purchase or active subscription for this user and insyt' })

@@ -192,6 +192,31 @@ export const TEST_USERS = [
     },
     socials: [],
   },
+  {
+    // Anchor for the access-matrix "creator has NO subscription offer" case.
+    // Owns exactly one paid insyt (seed-insyt-17-nooffer-paid) and must NEVER
+    // be given a subscription offer — the spec asserts the subscribe CTA stays
+    // hidden on their locked insyts. The previous anchors both drifted: the
+    // default creator's €5/mo offer is load-bearing (disable-subscription +
+    // billing suites seed/restore it) and seed-creator-full picked one up from
+    // a price-change run. This persona exists solely to keep the premise stable.
+    email: 'seed-creator-nooffer@getinsyts.test',
+    persona: 'no-subscription-offer',
+    profile: {
+      display_name: 'No Offer Creator',
+      username: 'nooffercreator',
+      headline: 'Paid insyts, no subscription',
+      bio: 'Sells individual insyts only — deliberately has no subscription offer so the locked state shows the Buy CTA alone.',
+      location: null,
+      website: null,
+      is_creator: true,
+      sports: ['Running'],
+      content_types: ['Training Session'],
+      avatar: null,
+      cover: null,
+    },
+    socials: [],
+  },
 
   // ---- Consumers ----
   {

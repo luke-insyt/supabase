@@ -6,6 +6,7 @@ const ANCHOR  = 'lukas.lampe@ll-endeavors.com'
 const FULL    = 'seed-creator-full@getinsyts.test'
 const LONG    = 'seed-creator-long-strings@getinsyts.test'
 const SUBSCRIPTION = 'seed-creator-subscription@getinsyts.test' // GET-75: creator with a subscription offer
+const NOOFFER = 'seed-creator-nooffer@getinsyts.test' // access-matrix: creator who must never offer a subscription
 
 const TAGS_BASE = ['training', 'tactics']
 
@@ -302,6 +303,25 @@ export const INSYTS = [
     read_time_min: 5,
     creator_email: SUBSCRIPTION,
     sport: 'basketball',
+    status: 'published',
+    is_hidden: false,
+    tags: TAGS_BASE,
+    has_thumbnail: true,
+    attachments: [],
+  },
+
+  // ---- seed-creator-nooffer owns this (access-matrix no-offer case) ----
+  {
+    // Paid insyt by the creator who must NEVER offer a subscription: the
+    // access-matrix "no offer → Buy CTA only, no Subscribe" test anchors here.
+    insyt_id: 'seed-insyt-17-nooffer-paid',
+    title: 'No-offer creator — paid insyt',
+    abstract: 'Paid insyt by a creator without a subscription offer; the locked state shows the Buy CTA only.',
+    body_html: '<p>Paid insyt used to verify the subscribe CTA stays hidden when the creator offers no subscription (access-matrix).</p>',
+    price_eur: 1400,
+    read_time_min: 4,
+    creator_email: NOOFFER,
+    sport: 'running',
     status: 'published',
     is_hidden: false,
     tags: TAGS_BASE,

@@ -32,7 +32,10 @@ function json(status: number, body: unknown): Response {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json(405, { error: 'POST only' })
-  if (!SECRET) return json(500, { error: 'GI_INTAKE_SECRET is not configured' })
+  // Missing secret degrades to an UNSIGNED forward (loud in fn logs) so the
+  // rollout has no broken window — n8n only starts rejecting unsigned posts
+  // once every sender is signing (the flip is the last step).
+  if (!SECRET) console.error('support-intake: GI_INTAKE_SECRET not set — forwarding unsigned')
 
   const raw = await req.text()
   if (raw.length > MAX_BODY_BYTES) return json(413, { error: 'Payload too large' })
@@ -50,7 +53,10 @@ Deno.serve(async (req) => {
   try {
     resp = await fetch(INTAKE_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-gi-intake-secret': SECRET },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(SECRET ? { 'x-gi-intake-secret': SECRET } : {}),
+      },
       body: JSON.stringify(body),
     })
   } catch (err) {

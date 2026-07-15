@@ -24,6 +24,21 @@ const json = (status: number, body: unknown) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
+// GET-186: Stripe's REST API returns the embedded-checkout `client_secret`
+// percent-encoded (the `fid` segment contains %2F / %2B), but Stripe.js
+// `initEmbeddedCheckout` requires it DECODED — a raw value throws "Unable to
+// parse client secret" and the modal fails to load. The Stripe SDKs decode it
+// for you; we call the raw REST API, so decode it ourselves before returning.
+// (The RN app's embedded subscribe relays this same fn, so the decode fixes it too.)
+const decodeClientSecret = (cs: string | null | undefined): string | null => {
+  if (!cs) return cs ?? null
+  try {
+    return decodeURIComponent(cs)
+  } catch {
+    return cs
+  }
+}
+
 Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, async (req, log) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -153,7 +168,7 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     }
 
     return json(200, {
-      client_secret: session.client_secret,
+      client_secret: decodeClientSecret(session.client_secret),
       session_id: session.id,
     })
   } catch (err) {

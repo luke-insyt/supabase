@@ -17,6 +17,17 @@
 //   BREVO_API_KEY — unset => Brevo call is a logged no-op (skip state).
 //   BREVO_WAITLIST_LIST_ID — the waitlist list; absent => contact upserts but
 //     list-add is skipped (defensive).
+//   BREVO_WAITLIST_TEMPLATE_ID — the confirmation email template; absent => the
+//     send is skipped (the contact upsert still runs).
+//
+// (c) Confirmation email — sent ONLY on a first join. `email` is the upsert key, so
+// re-submitting with changed picks updates the row silently; nobody gets a second
+// "you're on the list" mail for editing their preferences. Whether the address is
+// new is decided by a SELECT before the upsert (see isFirstJoin), because the upsert
+// itself can't distinguish insert from update: created_at defaults to now() and we
+// stamp updated_at ourselves, so the two timestamps differ by microseconds on BOTH
+// paths. Like (b), the send is wrapped in try/catch after the DB commit — a Brevo
+// outage costs the visitor an email, never their place on the list.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -241,6 +252,54 @@ async function upsertBrevoContact(row: WaitlistRow): Promise<void> {
   }
 }
 
+// Form-facing wording for the role checkboxes — the email should echo back what the
+// visitor actually ticked, not the internal enum. Keep in sync with the Designer labels
+// on [data-gi-waitlist-role] in the waitlist modal.
+const ROLE_LABELS: Record<string, string> = {
+  creator: 'Selling / creating',
+  buyer: 'Buying',
+}
+
+// (c) Confirmation email seam. Mirrors upsertBrevoContact: no-ops + logs when the key or
+// the template id is unset, throws on a non-2xx so the caller can log it and move on.
+async function sendWaitlistEmail(row: WaitlistRow): Promise<void> {
+  const apiKey = (Deno.env.get('BREVO_API_KEY') || '').trim()
+  if (!apiKey) {
+    console.log('waitlist-email:skipped-no-key')
+    return
+  }
+  const templateIdRaw = (Deno.env.get('BREVO_WAITLIST_TEMPLATE_ID') || '').trim()
+  const templateId = Number(templateIdRaw)
+  if (!templateIdRaw || !Number.isFinite(templateId)) {
+    console.log('waitlist-email:skipped-no-template')
+    return
+  }
+
+  const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      accept: 'application/json',
+      'api-key': apiKey,
+    },
+    body: JSON.stringify({
+      to: [{ email: row.email }],
+      templateId,
+      // The template renders the Sports / Content rows only when these are non-empty
+      // ({% if params.X %}), so an empty string correctly drops the whole row.
+      params: {
+        ROLES: row.roles.map((r) => ROLE_LABELS[r] ?? r).join(', '),
+        SPORTS: row.sports.join(', '),
+        CONTENT: row.content_prefs.join(', '),
+      },
+    }),
+  })
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '')
+    throw new Error(`brevo-email ${resp.status}: ${text.slice(0, 300)}`)
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json(405, { error: 'method_not_allowed' })
@@ -259,11 +318,25 @@ Deno.serve(async (req) => {
   const row = result.value
 
   // (a) DB write — the source of truth. A failure here 500s (nothing else runs).
+  let isFirstJoin = false
   try {
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
+    // Is this address already on the list? Read BEFORE the upsert — afterwards the row
+    // exists either way and the answer is unrecoverable. A read failure is treated as
+    // "not new" so a hiccup can't spam a repeat sign-up with a duplicate email.
+    const { data: existing, error: lookupError } = await serviceClient
+      .from('waitlist')
+      .select('email')
+      .eq('email', row.email)
+      .maybeSingle()
+    if (lookupError) {
+      console.error('waitlist:lookup-failed', lookupError.message)
+    }
+    isFirstJoin = !lookupError && !existing
+
     const { error } = await serviceClient.from('waitlist').upsert(
       {
         email: row.email,
@@ -290,6 +363,17 @@ Deno.serve(async (req) => {
     await upsertBrevoContact(row)
   } catch (err) {
     console.error('brevo:failed', (err as Error).message)
+  }
+
+  // (c) Confirmation email — first join only, and never allowed to fail the request.
+  if (isFirstJoin) {
+    try {
+      await sendWaitlistEmail(row)
+    } catch (err) {
+      console.error('waitlist-email:failed', (err as Error).message)
+    }
+  } else {
+    console.log('waitlist-email:skipped-returning-visitor')
   }
 
   return json(200, { ok: true })

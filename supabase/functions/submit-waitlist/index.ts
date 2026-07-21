@@ -159,6 +159,7 @@ export interface WaitlistRow {
   content_prefs: string[]
   interest: string | null
   source: string
+  marketing_consent: boolean
 }
 
 export type ValidateResult =
@@ -200,9 +201,25 @@ export function validateWaitlistPayload(raw: unknown): ValidateResult {
 
   const source = typeof body.source === 'string' && body.source.trim() ? body.source.trim() : 'home-2-copy'
 
+  // 6. marketing_consent — REQUIRED, and must be the boolean `true`. This is the recorded
+  // lawful basis for the confirmation email + the batched Brevo invites, so it is checked
+  // strictly: "true", 1 and other truthy values are rejected rather than coerced. Nothing
+  // is written when it is absent — no row, no contact, no email.
+  if (body.marketing_consent !== true) {
+    return { ok: false, error: 'consent_required' }
+  }
+
   return {
     ok: true,
-    value: { email: emailRaw, roles, sports, content_prefs, interest, source },
+    value: {
+      email: emailRaw,
+      roles,
+      sports,
+      content_prefs,
+      interest,
+      source,
+      marketing_consent: true,
+    },
   }
 }
 
@@ -345,6 +362,10 @@ Deno.serve(async (req) => {
         content_prefs: row.content_prefs,
         interest: row.interest,
         source: row.source,
+        marketing_consent: row.marketing_consent,
+        // Stamped on every accepted submit: consent is re-given each time the form is
+        // sent, so the timestamp reflects the most recent affirmative act.
+        consent_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'email' }

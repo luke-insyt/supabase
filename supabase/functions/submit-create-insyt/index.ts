@@ -167,12 +167,31 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
     }
   }
 
+  // ── Tags (GET-190) ─────────────────────────────────────────────────────────
+  // Resolve ONCE here, before any row is built, so every write path below stores
+  // canonical labels. Must run before isNoOpEdit's comparison (buildPublishedRow)
+  // or a re-save of unchanged tags would look like a change and re-fire the n8n
+  // republish + buyer notifications.
+  // p_created_by: auth.uid() is NULL under the service key, so the author has to be
+  // passed explicitly or insyt_tag_vocab.created_by could never be populated.
+  const rawTags = Array.isArray(payload.tags) ? payload.tags : []
+  let tags: string[] = []
+  if (rawTags.length) {
+    const { data, error } = await svc.rpc('resolve_insyt_tags', {
+      p_labels: rawTags,
+      p_created_by: authUserId,
+    })
+    if (error) return json(400, { error: 'Invalid tags: ' + error.message })
+    tags = (data as string[]) || []
+  }
+
   if (action === 'save_draft') {
     return await saveDraft(svc, {
       authUserId,
       creatorEmail,
       correlation_id,
       payload,
+      tags,
       insyt_id: payload.insyt_id,
     })
   }
@@ -183,6 +202,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
       creatorEmail,
       correlation_id,
       payload,
+      tags,
       userRow,
       log,
     })
@@ -194,6 +214,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
       creatorEmail,
       correlation_id,
       payload,
+      tags,
       userRow,
       log,
     })
@@ -213,6 +234,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
     title,
     priceCents,
     isFree,
+    tags,
   })
 
   let n8nResp: Response
@@ -327,9 +349,10 @@ async function saveDraft(
     correlation_id: string
     insyt_id?: string
     payload: Payload
+    tags: string[]
   },
 ) {
-  const { creatorEmail, payload, insyt_id } = args
+  const { creatorEmail, payload, insyt_id, tags } = args
 
   const row = {
     title: String(payload.title || '').trim() || 'Untitled draft',
@@ -338,7 +361,7 @@ async function saveDraft(
     sport: String(payload.sport || '').trim() || 'soccer',
     body_html: String(payload.full_text || '').trim() || null,
     price_eur: payload.is_free ? 0 : Number(payload.price_cents || 0),
-    tags: payload.tags || [],
+    tags,
     creator_email: creatorEmail,
     status: 'draft',
     is_hidden: true,
@@ -488,7 +511,9 @@ async function distinctBuyers(svc: Svc, insytId: string): Promise<string[]> {
 // Build the insyts row from the submitted payload, reusing save_draft's field
 // mapping. Used by both update_published and confirm_update so the persisted
 // shape is identical. (Does NOT set status — an edit keeps it published.)
-function buildPublishedRow(payload: Payload) {
+// tags arrive already canonicalized by resolve_insyt_tags (GET-190) so isNoOpEdit
+// below compares canonical-vs-canonical.
+function buildPublishedRow(payload: Payload, tags: string[]) {
   return {
     title: String(payload.title || '').trim(),
     abstract: String(payload.description || '').trim() || ' ',
@@ -496,7 +521,7 @@ function buildPublishedRow(payload: Payload) {
     sport: String(payload.sport || '').trim() || 'soccer',
     body_html: String(payload.full_text || '').trim() || null,
     price_eur: payload.is_free ? 0 : Number(payload.price_cents || 0),
-    tags: payload.tags || [],
+    tags,
     thumbnail_url: payload.cover?.path || null,
   }
 }
@@ -554,6 +579,7 @@ function buildCreateForwardBody(args: {
   title: string
   priceCents: number
   isFree: boolean
+  tags: string[]
   is_edit?: boolean
 }) {
   const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
@@ -576,7 +602,7 @@ function buildCreateForwardBody(args: {
     full_text: args.payload.full_text || '',
     price_cents: args.isFree ? 0 : args.priceCents,
     is_free: args.isFree,
-    tags: args.payload.tags || [],
+    tags: args.tags,
     cover: args.payload.cover || null,
     images: args.payload.images || [],
     videos: args.payload.videos || [],
@@ -643,6 +669,8 @@ async function persistEditAndRepublish(
       title: row.title,
       priceCents: Number(row.price_eur || 0),
       isFree: !!payload.is_free,
+      // already canonicalized — row came from buildPublishedRow(payload, tags)
+      tags: row.tags,
       is_edit: true,
     })
     try {
@@ -672,6 +700,7 @@ async function updatePublished(
     creatorEmail: string
     correlation_id: string
     payload: Payload
+    tags: string[]
     userRow: { webflow_creator_id?: string | null } | null
     log: GiLogger
   },
@@ -680,7 +709,7 @@ async function updatePublished(
   const gate = await assertOwner(svc, insytId, args.authUserId, args.creatorEmail)
   if ('error' in gate) return json(gate.status, { error: gate.error })
 
-  const row = buildPublishedRow(args.payload)
+  const row = buildPublishedRow(args.payload, args.tags)
   if (await isNoOpEdit(svc, gate, row, args.payload)) {
     return json(200, { noop: true })
   }
@@ -716,6 +745,7 @@ async function confirmUpdate(
     creatorEmail: string
     correlation_id: string
     payload: Payload & { message?: string }
+    tags: string[]
     userRow: { webflow_creator_id?: string | null; display_name?: string | null } | null
     log: GiLogger
   },
@@ -724,7 +754,7 @@ async function confirmUpdate(
   const gate = await assertOwner(svc, insytId, args.authUserId, args.creatorEmail)
   if ('error' in gate) return json(gate.status, { error: gate.error })
 
-  const row = buildPublishedRow(args.payload)
+  const row = buildPublishedRow(args.payload, args.tags)
   if (await isNoOpEdit(svc, gate, row, args.payload)) {
     return json(200, { noop: true })
   }

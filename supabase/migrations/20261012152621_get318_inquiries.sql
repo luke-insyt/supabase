@@ -32,6 +32,11 @@
 -- rows: web reads only its own row at src/insyt-detail.ts:557, the RN server
 -- reads ratings with the service role, aggregates are denormalised onto insyts).
 -- Every new behavior is a no-op while no insyt is private and no inquiry exists.
+--
+-- ⚠️ NEVER `TRUNCATE public.inquiries / inquiry_proposals … CASCADE` (e.g. to
+-- reset staging fixtures): insyts.inquiry_proposal_id references
+-- inquiry_proposals, so the CASCADE truncates public.insyts — every insyt.
+-- Delete the rows you mean instead (the e2e fixtures do).
 
 -- 🚨 EXPLICIT TRANSACTION — our deploy path does NOT wrap a migration file in
 -- one (see 20261001174013_get277_insyts_published_at.sql). Without it a failure
@@ -56,7 +61,9 @@ create table public.inquiries (
   status                 text not null default 'draft'
                          check (status in ('draft', 'open', 'in_progress', 'completed', 'unpublished', 'archived')),
   title                  text not null default '' check (char_length(title) <= 120),
-  description_html       text not null default '',
+  -- 50 000 = MAX_HTML_CHARS in getinsyts-native server/src/lib/sanitize-html.ts
+  -- (the server rejects over-cap input before it gets here; this is the backstop).
+  description_html       text not null default '' check (char_length(description_html) <= 50000),
   sport                  text,
   content_type           text,
   expertise_slugs        text[] not null default '{}',
@@ -133,7 +140,7 @@ create table public.inquiry_proposals (
   status               text not null default 'submitted'
                        check (status in ('submitted', 'accepted', 'declined', 'withdrawn', 'delivering', 'delivered', 'cancelled')),
   abstract             text not null check (char_length(abstract) between 1 and 500),
-  outline_html         text not null check (char_length(outline_html) > 0),
+  outline_html         text not null check (char_length(outline_html) between 1 and 50000),   -- = MAX_HTML_CHARS
   read_time_min        integer not null check (read_time_min > 0),
   price_cents          integer not null check (price_cents >= 100 and price_cents % 100 = 0),
   deliver_by           date not null,

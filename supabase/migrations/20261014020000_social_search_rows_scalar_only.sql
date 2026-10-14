@@ -4,6 +4,12 @@
 --   searches/<id>/result.json.gz   what the user asked and got back
 --   searches/<id>/trace.json.gz    the full research trace
 -- The jsonb columns dropped below were copied there before this ran.
+--
+-- IRREVERSIBLE: the drops below can't be rolled back; the bucket copy is the
+-- backup. Safe because only staging ever had these columns (3 rows, copied by
+-- hand to searches/<id>/{result,trace}.json.gz on 2026-10-13 — see
+-- webflow-app-documentation/features/social-search/implementation.md). Prod
+-- never had social_searches, so on prod this runs against an empty, fresh table.
 
 alter table public.social_searches
   add column cost_usd numeric(10, 4),

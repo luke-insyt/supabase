@@ -83,7 +83,7 @@ Deno.serve(async (req) => {
 
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, insyt_id, body_html, video_url, creator_email, price_eur, creator_auth_user_id')
+      .select('id, insyt_id, body_html, video_url, creator_email, price_eur, creator_auth_user_id, visibility')
       .or(idMatch)
       .limit(1)
       .maybeSingle()
@@ -91,7 +91,10 @@ Deno.serve(async (req) => {
     if (insytError) {
       return json(500, { error: 'Failed to query insyts', details: insytError.message })
     }
-    if (!insyt) {
+    // GET-328: a private inquiry insyt is shown on the web to nobody — not its
+    // author, not its requester, not a subscriber (S7-AC1, decision 19). Same
+    // 404 as a missing row, so the web never confirms one exists.
+    if (!insyt || insyt.visibility === 'private') {
       return json(404, { error: 'Insyt not found', insyt_id })
     }
 

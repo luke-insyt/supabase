@@ -13,9 +13,11 @@
 // The row it writes mirrors the n8n `Upsert insyts row` node field for field,
 // plus visibility / private_until / inquiry_proposal_id. The insyts trigger
 // `insyts_mark_proposal_delivered` then marks the proposal delivered.
-import type { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-type Svc = ReturnType<typeof createClient>
+// Untyped schema: the generated types aren't in this repo.
+// deno-lint-ignore no-explicit-any
+type Svc = SupabaseClient<any>
 
 export type InquiryProposal = {
   id: string
@@ -105,9 +107,10 @@ export type PrivatePublishArgs = {
 }
 
 // The public thumbnail URL the n8n pipeline stores (`Edit Fields`), from the
-// cover attachment — '' without one.
-export function publicThumbnailUrl(cover: { bucket?: string; path?: string } | null | undefined): string {
-  if (!cover?.bucket || !cover?.path) return ''
+// cover attachment — null without one (so the edit no-op check, which reads
+// a missing thumbnail as null, matches an unchanged coverless insyt).
+export function publicThumbnailUrl(cover: { bucket?: string; path?: string } | null | undefined): string | null {
+  if (!cover?.bucket || !cover?.path) return null
   return `${Deno.env.get('SUPABASE_URL') || ''}/storage/v1/object/public/${cover.bucket}/${cover.path}`
 }
 

@@ -21,8 +21,8 @@ Deno.test('readTimeMin: mirrors the n8n pipeline (200 wpm, at least 1)', () => {
 })
 
 Deno.test('private edits rebuild the public cover URL and read time (no n8n re-sync)', () => {
-  assertEquals(publicThumbnailUrl(null), '')
-  assertEquals(publicThumbnailUrl({ bucket: 'insyt-thumbnails', path: 'u/c/cover.jpg' }).endsWith('/storage/v1/object/public/insyt-thumbnails/u/c/cover.jpg'), true)
+  assertEquals(publicThumbnailUrl(null), null)
+  assertEquals(String(publicThumbnailUrl({ bucket: 'insyt-thumbnails', path: 'u/c/cover.jpg' })).endsWith('/storage/v1/object/public/insyt-thumbnails/u/c/cover.jpg'), true)
   const f = privateEditFields({ cover: null, full_text: '<p>' + 'w '.repeat(250) + '</p>', description: '' })
-  assertEquals(f, { thumbnail_url: '', read_time_min: 2 })
+  assertEquals(f, { thumbnail_url: null, read_time_min: 2 })
 })

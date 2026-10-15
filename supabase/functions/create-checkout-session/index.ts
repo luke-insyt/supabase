@@ -60,14 +60,16 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
 
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('insyt_id, stripe_price_id, creator_email, price_eur, title')
+      .select('insyt_id, stripe_price_id, creator_email, price_eur, title, visibility')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
     if (insytError) {
       return json(500, { error: 'Failed to query insyts', details: insytError.message })
     }
-    if (!insyt) {
+    // GET-328: a private inquiry insyt is bought only in the RN app, by its
+    // requester (S6-AC3, S7-AC1) — never through the web checkout.
+    if (!insyt || insyt.visibility === 'private') {
       return json(404, { error: 'Insyt not found' })
     }
     // `stripe_price_id` presence still gates "published & paid" (free / pending-publish

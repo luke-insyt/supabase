@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
     // Load the target insyt and verify the caller owns it (creator_email match).
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('insyt_id, creator_email, is_hidden')
+      .select('insyt_id, creator_email, is_hidden, visibility')
       .eq('insyt_id', insytId)
       .maybeSingle()
     if (insytError) return json(500, { error: 'Failed to load insyt', details: insytError.message })
@@ -79,6 +79,13 @@ Deno.serve(async (req) => {
     const ownerEmail = String(insyt.creator_email || '').trim().toLowerCase()
     if (!ownerEmail || ownerEmail !== callerEmail) {
       return json(403, { error: 'You can only publish or unpublish your own insyts' })
+    }
+
+    // GET-328 (S7-AC4): a private inquiry insyt can't be unlisted — its
+    // requester must always be able to buy it. Covers web and RN (the RN API
+    // relays here).
+    if (hidden && insyt.visibility === 'private') {
+      return json(409, { error: 'An insyt delivered for an inquiry can’t be unlisted while it’s private.' })
     }
 
     const { error: updError } = await serviceClient

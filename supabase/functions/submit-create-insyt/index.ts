@@ -4,6 +4,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
+import { loadOwnProposal, priceRefusal, publishPrivate, type InquiryProposal } from './inquiry.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -54,6 +55,7 @@ type Payload = {
   videos?: Attachment[]
   pdfs?: Attachment[]
   message?: string         // confirm_update: creator's optional note to buyers (GET-71)
+  inquiry_proposal_id?: string  // GET-328: delivering against an accepted inquiry proposal
 }
 
 const N8N_CREATE_INSYT_URL = (Deno.env.get('N8N_CREATE_INSYT_URL') || '').trim()
@@ -110,6 +112,8 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
   const action = payload.action || 'submit'
 
   if (action === 'load_draft') {
+    const pid = String(payload.inquiry_proposal_id || '').trim()
+    if (pid) return await loadInquiryDraft(svc, creatorEmail, pid, authUserId)
     return await loadDraft(svc, creatorEmail)
   }
 
@@ -185,7 +189,24 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
     tags = (data as string[]) || []
   }
 
+  // ── Inquiry deliveries (GET-328) ─────────────────────────────────────────
+  // Every create/edit action on an inquiry draft or insyt passes this gate:
+  // the proposal must be the caller's, the price is the proposal's (S5-AC4),
+  // and a private insyt never reaches n8n (see inquiry.ts).
+  const inquiry = await resolveInquiry(svc, action, payload, authUserId)
+  if (inquiry && 'error' in inquiry) return json(inquiry.status, { error: inquiry.error })
+  if (inquiry) {
+    const refusal = priceRefusal(inquiry.price_cents, payload)
+    if (refusal) return json(400, { error: refusal })
+    payload.price_cents = inquiry.price_cents
+    payload.is_free = false
+    payload.inquiry_proposal_id = inquiry.id
+  }
+
   if (action === 'save_draft') {
+    if (inquiry && !['accepted', 'delivering'].includes(inquiry.status)) {
+      return json(409, { error: 'This proposal can no longer be delivered.' })
+    }
     return await saveDraft(svc, {
       authUserId,
       creatorEmail,
@@ -193,6 +214,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
       payload,
       tags,
       insyt_id: payload.insyt_id,
+      inquiry,
     })
   }
 
@@ -217,6 +239,22 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
       tags,
       userRow,
       log,
+    })
+  }
+
+  if (inquiry) {
+    // The RN API claims the proposal (accepted → delivering) before relaying
+    // the submit, so a double tap can't start two publishes (S6-AC2).
+    if (inquiry.status !== 'delivering') {
+      return json(409, { error: 'Start the delivery from the app — this proposal isn’t being delivered.' })
+    }
+    return await submitPrivate(svc, {
+      inquiry,
+      creatorEmail,
+      correlation_id,
+      payload,
+      title,
+      tags,
     })
   }
 
@@ -275,6 +313,7 @@ async function loadDraft(svc: ReturnType<typeof createClient>, creatorEmail: str
     .select('*, insyt_attachments(*)')
     .eq('creator_email', creatorEmail)
     .eq('status', 'draft')
+    .is('inquiry_proposal_id', null)   // inquiry drafts resume from the proposal (GET-328)
     .gte('created_at', sevenDaysAgo)
     .order('updated_at', { ascending: false })
     .limit(1)
@@ -295,6 +334,7 @@ async function listDrafts(svc: ReturnType<typeof createClient>, creatorEmail: st
     .select('*, insyt_attachments(*)')
     .eq('creator_email', creatorEmail)
     .eq('status', 'draft')
+    .is('inquiry_proposal_id', null)   // inquiry drafts resume from the proposal (GET-328)
     .gte('created_at', sevenDaysAgo)
     .order('updated_at', { ascending: false })
     .limit(10)
@@ -341,6 +381,131 @@ async function discardDraft(
   return json(200, { success: true })
 }
 
+// ─── Inquiry deliveries (GET-328) ────────────────────────────────────────────
+
+type Fail = { error: string; status: number }
+
+// The proposal an action is delivering against, or null for a normal insyt.
+// The row's own link wins over the payload, so an inquiry draft or insyt stays
+// one whatever the client sends (the choke point can't be skipped by omitting
+// inquiry_proposal_id).
+async function resolveInquiry(
+  svc: ReturnType<typeof createClient>,
+  action: Action,
+  payload: Payload,
+  authUserId: string,
+): Promise<InquiryProposal | Fail | null> {
+  const isEdit = action === 'update_published' || action === 'confirm_update'
+  const ref = String(payload.insyt_id || '').trim()
+  let rowPid: string | null = null
+  if (ref && (isEdit || uuidRe.test(ref))) {
+    const { data, error } = await svc
+      .from('insyts')
+      .select('inquiry_proposal_id')
+      .eq(isEdit ? 'insyt_id' : 'id', ref)
+      .maybeSingle()
+    if (error) return { error: error.message, status: 500 }
+    rowPid = (data?.inquiry_proposal_id as string | null) ?? null
+  }
+  const asked = String(payload.inquiry_proposal_id || '').trim() || null
+  if (asked && !uuidRe.test(asked)) return { error: 'inquiry_proposal_id must be a UUID', status: 400 }
+  if (asked && rowPid && asked !== rowPid) return { error: 'This insyt belongs to another proposal', status: 400 }
+  if (asked && !rowPid && isEdit) return { error: 'This insyt isn’t an inquiry delivery', status: 400 }
+  const pid = rowPid || asked
+  if (!pid) return null
+  return await loadOwnProposal(svc, pid, authUserId)
+}
+
+// Resume the draft of one proposal (the RN create screen opened from it).
+async function loadInquiryDraft(
+  svc: ReturnType<typeof createClient>,
+  creatorEmail: string,
+  proposalId: string,
+  authUserId: string,
+) {
+  if (!uuidRe.test(proposalId)) return json(400, { error: 'inquiry_proposal_id must be a UUID' })
+  const proposal = await loadOwnProposal(svc, proposalId, authUserId)
+  if ('error' in proposal) return json(proposal.status, { error: proposal.error })
+  const { data, error } = await svc
+    .from('insyts')
+    .select('*, insyt_attachments(*)')
+    .eq('creator_email', creatorEmail)
+    .eq('status', 'draft')
+    .eq('inquiry_proposal_id', proposalId)
+    .maybeSingle()
+  if (error) return json(500, { error: error.message })
+  return json(200, { draft: data || null })
+}
+
+// Publish a private delivery (no n8n — see inquiry.ts). The draft row, when
+// there is one, becomes the insyt: same id, like the n8n upsert.
+async function submitPrivate(
+  svc: ReturnType<typeof createClient>,
+  args: {
+    inquiry: InquiryProposal
+    creatorEmail: string
+    correlation_id: string
+    payload: Payload
+    title: string
+    tags: string[]
+  },
+) {
+  const { inquiry, creatorEmail, payload } = args
+  let insytUuid: string | null = null
+  const ref = String(payload.insyt_id || '').trim()
+  if (ref) {
+    // Never upsert over a row that isn't this creator's draft for this proposal.
+    const { data } = await svc
+      .from('insyts')
+      .select('id, creator_email, status, inquiry_proposal_id')
+      .eq('id', ref)
+      .maybeSingle()
+    if (data) {
+      if (data.creator_email !== creatorEmail) return json(403, { error: 'Not your draft' })
+      if (data.status !== 'draft' || (data.inquiry_proposal_id && data.inquiry_proposal_id !== inquiry.id)) {
+        return json(409, { error: 'This draft can’t be delivered.' })
+      }
+    }
+    insytUuid = ref
+  } else {
+    const { data } = await svc
+      .from('insyts')
+      .select('id, status')
+      .eq('inquiry_proposal_id', inquiry.id)
+      .maybeSingle()
+    if (data && data.status !== 'draft') return json(409, { error: 'This proposal has already been delivered.' })
+    insytUuid = (data?.id as string | undefined) ?? crypto.randomUUID()
+  }
+
+  const failed = await publishPrivate(svc, {
+    insytUuid,
+    proposal: inquiry,
+    creatorEmail,
+    correlationId: args.correlation_id,
+    title: args.title,
+    description: String(payload.description || ''),
+    fullText: String(payload.full_text || ''),
+    sport: String(payload.sport || ''),
+    contentType: String(payload.content_type || ''),
+    tags: args.tags,
+    cover: payload.cover || null,
+    images: payload.images || [],
+    videos: payload.videos || [],
+    pdfs: payload.pdfs || [],
+    now: new Date(),
+  })
+  if (failed) return json(failed.status, { error: failed.error })
+
+  // Same response shape as the n8n path, so the create screen needs no branch;
+  // no forward_url — a private insyt has no public page.
+  return json(200, {
+    success: true,
+    correlation_id: args.correlation_id,
+    private: true,
+    n8n: { ok: true, insyt_id: insytUuid, correlation_id: args.correlation_id, status: 'live', forward_url: null },
+  })
+}
+
 async function saveDraft(
   svc: ReturnType<typeof createClient>,
   args: {
@@ -350,9 +515,22 @@ async function saveDraft(
     insyt_id?: string
     payload: Payload
     tags: string[]
+    inquiry?: InquiryProposal | null
   },
 ) {
-  const { creatorEmail, payload, insyt_id, tags } = args
+  const { creatorEmail, payload, tags, inquiry } = args
+  let insyt_id = args.insyt_id
+  // One draft per proposal (insyts_inquiry_proposal_id_key): a fresh save for a
+  // proposal that already has a draft continues that draft.
+  if (inquiry && !insyt_id) {
+    const { data: existing } = await svc
+      .from('insyts')
+      .select('id, status')
+      .eq('inquiry_proposal_id', inquiry.id)
+      .maybeSingle()
+    if (existing && existing.status !== 'draft') return json(409, { error: 'This proposal has already been delivered.' })
+    insyt_id = (existing?.id as string | undefined) ?? undefined
+  }
 
   const row = {
     title: String(payload.title || '').trim() || 'Untitled draft',
@@ -367,6 +545,9 @@ async function saveDraft(
     is_hidden: true,
     thumbnail_url: payload.cover?.path || null,
     updated_at: new Date().toISOString(),
+    // Drafts are hidden anyway; private from the first save so nothing can
+    // ever publish this row publicly by mistake (S7-AC1).
+    ...(inquiry ? { inquiry_proposal_id: inquiry.id, visibility: 'private' } : {}),
   }
 
   let savedId: string | null = null
@@ -447,6 +628,7 @@ type OwnedInsyt = {
   price_eur: number | null
   tags: string[] | null
   thumbnail_url: string | null
+  visibility: string | null
 }
 
 type OwnerGate = OwnedInsyt | { error: string; status: number }
@@ -464,7 +646,7 @@ async function assertOwner(
   const { data, error } = await svc
     .from('insyts')
     .select(
-      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url',
+      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility',
     )
     .eq('insyt_id', insytId)
     .maybeSingle()
@@ -659,7 +841,9 @@ async function persistEditAndRepublish(
   // Re-run publish (fire the n8n create-insyt webhook with is_edit:true). The
   // row is already saved (source of truth, D-2); a re-sync failure is logged
   // and surfaced as a non-blocking warning rather than losing the edit.
-  if (N8N_CREATE_INSYT_URL) {
+  // A private insyt (GET-328) has no CMS item or payment link to re-sync, and
+  // the pipeline would create both — the saved row is the whole edit.
+  if (N8N_CREATE_INSYT_URL && stored.visibility !== 'private') {
     const forwardBody = buildCreateForwardBody({
       authUserId: args.authUserId,
       creatorEmail: args.creatorEmail,
@@ -784,7 +968,9 @@ async function confirmUpdate(
   if (auditErr) args.log.warn('insyt_update_notifications insert failed', { err: auditErr.message })
 
   // Fire-and-forget buyer-notify dispatch — never blocks the creator's save.
-  if (N8N_INSYT_UPDATED_WEBHOOK_URL && buyers.length > 0) {
+  // Never for a private insyt (GET-328): its only buyer is the requester, and
+  // nothing about it may leave the app while private.
+  if (N8N_INSYT_UPDATED_WEBHOOK_URL && buyers.length > 0 && gate.visibility !== 'private') {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
     const env = supabaseUrl.includes('krapqgxrqprtajatxjzd') ? 'production' : 'staging'
     const notifyBody = {

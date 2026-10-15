@@ -4,7 +4,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
-import { loadOwnProposal, priceRefusal, publishPrivate, type InquiryProposal } from './inquiry.ts'
+import { loadOwnProposal, priceRefusal, privateEditFields, publishPrivate, type InquiryProposal } from './inquiry.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -454,25 +454,27 @@ async function submitPrivate(
   let insytUuid: string | null = null
   const ref = String(payload.insyt_id || '').trim()
   if (ref) {
-    // Never upsert over a row that isn't this creator's draft for this proposal.
-    const { data } = await svc
+    // Only an existing draft of this creator for this proposal: never upsert
+    // over someone else's row, nor mint a row at a client-chosen id.
+    const { data, error } = await svc
       .from('insyts')
       .select('id, creator_email, status, inquiry_proposal_id')
       .eq('id', ref)
       .maybeSingle()
-    if (data) {
-      if (data.creator_email !== creatorEmail) return json(403, { error: 'Not your draft' })
-      if (data.status !== 'draft' || (data.inquiry_proposal_id && data.inquiry_proposal_id !== inquiry.id)) {
-        return json(409, { error: 'This draft can’t be delivered.' })
-      }
+    if (error) return json(500, { error: error.message })
+    if (!data) return json(404, { error: 'Draft not found' })
+    if (data.creator_email !== creatorEmail) return json(403, { error: 'Not your draft' })
+    if (data.status !== 'draft' || (data.inquiry_proposal_id && data.inquiry_proposal_id !== inquiry.id)) {
+      return json(409, { error: 'This draft can’t be delivered.' })
     }
     insytUuid = ref
   } else {
-    const { data } = await svc
+    const { data, error } = await svc
       .from('insyts')
       .select('id, status')
       .eq('inquiry_proposal_id', inquiry.id)
       .maybeSingle()
+    if (error) return json(500, { error: error.message })
     if (data && data.status !== 'draft') return json(409, { error: 'This proposal has already been delivered.' })
     insytUuid = (data?.id as string | undefined) ?? crypto.randomUUID()
   }
@@ -708,6 +710,14 @@ function buildPublishedRow(payload: Payload, tags: string[]) {
   }
 }
 
+// GET-328: a private insyt skips the n8n is_edit re-sync, which is what
+// rewrites the public thumbnail URL and the read time on a public edit — so
+// set them here (else the cover becomes a bare storage path).
+function editRow(stored: OwnedInsyt, payload: Payload, tags: string[]) {
+  const row = buildPublishedRow(payload, tags)
+  return stored.visibility === 'private' ? { ...row, ...privateEditFields(payload) } : row
+}
+
 // No-op guard (D-5): true when the submitted editable fields + media are
 // byte-identical to what's stored, so saving would change nothing. Compares the
 // mapped row fields and the full attachment set (cover + images + videos +
@@ -893,7 +903,7 @@ async function updatePublished(
   const gate = await assertOwner(svc, insytId, args.authUserId, args.creatorEmail)
   if ('error' in gate) return json(gate.status, { error: gate.error })
 
-  const row = buildPublishedRow(args.payload, args.tags)
+  const row = editRow(gate, args.payload, args.tags)
   if (await isNoOpEdit(svc, gate, row, args.payload)) {
     return json(200, { noop: true })
   }
@@ -938,7 +948,7 @@ async function confirmUpdate(
   const gate = await assertOwner(svc, insytId, args.authUserId, args.creatorEmail)
   if ('error' in gate) return json(gate.status, { error: gate.error })
 
-  const row = buildPublishedRow(args.payload, args.tags)
+  const row = editRow(gate, args.payload, args.tags)
   if (await isNoOpEdit(svc, gate, row, args.payload)) {
     return json(200, { noop: true })
   }

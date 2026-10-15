@@ -104,15 +104,33 @@ export type PrivatePublishArgs = {
   now: Date
 }
 
-// Publish a private delivery in place of the n8n pipeline: the insyts row
-// (live, private, priced), its attachments and the completed status row the
-// create screen polls. No CMS item, no payment link, no notifications.
-export async function publishPrivate(svc: Svc, a: PrivatePublishArgs): Promise<Fail | null> {
-  const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-  const thumbnailUrl = a.cover?.bucket && a.cover?.path
-    ? `${supabaseUrl}/storage/v1/object/public/${a.cover.bucket}/${a.cover.path}`
-    : ''
+// The public thumbnail URL the n8n pipeline stores (`Edit Fields`), from the
+// cover attachment — '' without one.
+export function publicThumbnailUrl(cover: { bucket?: string; path?: string } | null | undefined): string {
+  if (!cover?.bucket || !cover?.path) return ''
+  return `${Deno.env.get('SUPABASE_URL') || ''}/storage/v1/object/public/${cover.bucket}/${cover.path}`
+}
 
+// The derived fields n8n's `is_edit` re-sync would rewrite on an edit; a
+// private insyt skips that re-sync, so its edits set them here instead.
+export function privateEditFields(payload: {
+  cover?: { bucket?: string; path?: string } | null
+  full_text?: string
+  description?: string
+}) {
+  return {
+    thumbnail_url: publicThumbnailUrl(payload.cover),
+    read_time_min: readTimeMin(String(payload.full_text || ''), String(payload.description || '')),
+  }
+}
+
+// Publish a private delivery in place of the n8n pipeline: the insyts row
+// (private, priced), its attachments, then — LAST — the flip to live, which is
+// what marks the proposal delivered (insyts_mark_proposal_delivered). A failure
+// before the flip leaves the proposal's draft, so the claim reverts and the
+// Insyter can retry; nothing is half-delivered. Then the completed status row
+// the create screen polls. No CMS item, no payment link, no notifications.
+export async function publishPrivate(svc: Svc, a: PrivatePublishArgs): Promise<Fail | null> {
   const { error: upErr } = await svc.from('insyts').upsert(
     {
       id: a.insytUuid,
@@ -127,9 +145,9 @@ export async function publishPrivate(svc: Svc, a: PrivatePublishArgs): Promise<F
       creator_email: a.creatorEmail,
       correlation_id: a.correlationId,
       read_time_min: readTimeMin(a.fullText, a.description),
-      thumbnail_url: thumbnailUrl,
-      is_hidden: false,
-      status: 'live',
+      thumbnail_url: publicThumbnailUrl(a.cover),
+      is_hidden: true,
+      status: 'draft',
       visibility: 'private',
       private_until: privateUntil(a.proposal.is_exclusive, a.now),
       inquiry_proposal_id: a.proposal.id,
@@ -137,9 +155,10 @@ export async function publishPrivate(svc: Svc, a: PrivatePublishArgs): Promise<F
     { onConflict: 'id' },
   )
   if (upErr) {
-    // 23505 on insyts_inquiry_proposal_id_key: this proposal already has an insyt.
+    // 23505 on insyts_inquiry_proposal_id_key: another row already carries
+    // this proposal (its insyt, or a second draft).
     if ((upErr as { code?: string }).code === '23505') {
-      return { error: 'This proposal has already been delivered.', status: 409 }
+      return { error: 'This proposal already has an insyt or a draft in progress.', status: 409 }
     }
     return { error: upErr.message, status: 500 }
   }
@@ -164,6 +183,12 @@ export async function publishPrivate(svc: Svc, a: PrivatePublishArgs): Promise<F
     const { error: attErr } = await svc.from('insyt_attachments').insert(rows)
     if (attErr) return { error: attErr.message, status: 500 }
   }
+
+  const { error: liveErr } = await svc
+    .from('insyts')
+    .update({ status: 'live', is_hidden: false })
+    .eq('id', a.insytUuid)
+  if (liveErr) return { error: liveErr.message, status: 500 }
 
   const { error: statusErr } = await svc.from('insyt_status').insert({
     correlation_id: a.correlationId,

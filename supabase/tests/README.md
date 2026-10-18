@@ -47,3 +47,41 @@ SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> \
   python3 supabase/tests/rating_subscriber_test.py
 ```
 Override `RATING_CREATOR_ID` / `RATING_INSYT_ID` to target a different paid insyt.
+
+## insyt_search_reader_test.ts — GET-340: Player search never sees paid insyt content
+
+Runs the two GET-340 migrations (`20261017210000_get340_insyt_search_reader`,
+`20261018120000_get340_insyt_reviews`) on a **real Postgres in-process** (PGlite, no Docker,
+no network, no secrets) over a minimal stand-in of the tables they touch, and asserts the wall:
+the reader role can read no table or view; anon/authenticated can't call `match` / `by_ids`;
+only the free-field allow-list leaves (never a `GET340_PAID_*` marker); eligibility + dedupe;
+exact-phrase player matching first (never the Insyter's name, never a prefix); tsquery operators
+can't break or widen a query; the definer functions the reader can run are exactly the two;
+both migrations idempotent; the area-save function keeps its old call shape; reviews take
+`insyt` (±1). 10 tests, ~3 s. Verified 2026-10-18 that adding a table grant to the reader
+fails it.
+
+```bash
+deno test -A supabase/tests/insyt_search_reader_test.ts
+# no local Deno:
+npx -y deno@2.1.4 test -A supabase/tests/insyt_search_reader_test.ts
+```
+In the side-by-side checkout (this repo nested inside `webflow-code`), prefix
+`DENO_NO_PACKAGE_JSON=1` so Deno ignores webflow-code's `package.json` / `node_modules`.
+
+## insyt_search_reader_live_test.ts — the same wall, live on staging
+
+Connects as the real `insyt_search_reader` through the Supavisor pooler and checks: refused on
+`insyts` (incl. `title`), `insyt_attachments`, `users`, the view, `storage.objects`; `match` /
+`by_ids` return exactly the allow-list with no `GET340_PAID_*` marker (uses the `get340-test`
+fixtures); and the SECURITY DEFINER functions the reader can execute are exactly the **reviewed
+list pinned in the file** — a new one fails until it's reviewed and added. Skipped (ignored)
+without `INSYT_SEARCH_DB_URL`; refuses to run against the prod ref. Load the URL from an env
+file, never inline (it holds the reader's password):
+
+```bash
+DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A \
+  --env-file=../getinsyts-native/server/.env supabase/tests/insyt_search_reader_live_test.ts
+```
+Re-run after any migration touching `insyts`, `users`, storage or `insyt_search`, and before
+a release. 3 tests; green on staging 2026-10-18.

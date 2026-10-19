@@ -50,8 +50,8 @@ Override `RATING_CREATOR_ID` / `RATING_INSYT_ID` to target a different paid insy
 
 ## insyt_search_reader_test.ts — GET-340: Player search never sees paid insyt content
 
-Runs the two GET-340 migrations (`20261017210000_get340_insyt_search_reader`,
-`20261018120000_get340_insyt_reviews`) on a **real Postgres in-process** (PGlite, no Docker,
+Runs the two GET-340 migrations (`20261017220908_get340_insyt_search_reader`,
+`20261018114553_get340_insyt_reviews`) on a **real Postgres in-process** (PGlite, no Docker,
 no network, no secrets) over a minimal stand-in of the tables they touch, and asserts the wall:
 the reader role can read no table or view; anon/authenticated can't call `match` / `by_ids`;
 only the free-field allow-list leaves (never a `GET340_PAID_*` marker); eligibility + dedupe;

@@ -2,7 +2,7 @@
 // (PGlite, in-process; no Docker, no network, no secrets).
 //
 // Runs the real area migrations (GET-335 areas, GET-340 reader + reviews) and
-// then 20261018150000_get343_search_enhancements.sql on a minimal stand-in of
+// then 20261018151603_get343_search_enhancements.sql on a minimal stand-in of
 // the other tables they touch (social_searches, social_search_reviews, users,
 // insyts), and asserts (webflow-app-documentation
 // features/social-search/search_enhancements_v1/requirements.md):
@@ -24,10 +24,10 @@ import { PGlite } from 'npm:@electric-sql/pglite@0.2.17'
 
 const MIGRATIONS = new URL('../migrations/', import.meta.url)
 const read = (f: string) => Deno.readTextFile(new URL(f, MIGRATIONS))
-const areasMigration = await read('20261016140000_social_search_areas.sql')
-const readerMigration = await read('20261017210000_get340_insyt_search_reader.sql')
-const reviewsMigration = await read('20261018120000_get340_insyt_reviews.sql')
-const migration = await read('20261018150000_get343_search_enhancements.sql')
+const areasMigration = await read('20261016114519_social_search_areas.sql')
+const readerMigration = await read('20261017220908_get340_insyt_search_reader.sql')
+const reviewsMigration = await read('20261018114553_get340_insyt_reviews.sql')
+const migration = await read('20261018151603_get343_search_enhancements.sql')
 
 const USER = '11111111-1111-1111-1111-111111111111'
 const SEARCH = '22222222-2222-2222-2222-222222222222'

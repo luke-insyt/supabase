@@ -50,7 +50,7 @@ revoke all on table public.social_search_area_data_sources from anon, authentica
 -- predates GET-345 can still save during the deploy window); '[]' clears them.
 -- Otherwise the rows are replaced in the same transaction as the sources; a
 -- bad value (unknown type, role, a type twice) raises and rolls the save back.
--- Everything else is unchanged from 20261018150000_get343_search_enhancements.sql.
+-- Everything else is unchanged from 20261018151603_get343_search_enhancements.sql.
 drop function if exists public.social_search_save_area(text, integer, text, text[], text, jsonb, jsonb, jsonb, text, text[], jsonb, jsonb);
 
 create or replace function public.social_search_save_area(

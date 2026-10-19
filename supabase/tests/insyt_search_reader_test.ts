@@ -21,8 +21,8 @@ import { assert, assertEquals, assertRejects } from 'jsr:@std/assert@1'
 import { PGlite } from 'npm:@electric-sql/pglite@0.2.17'
 
 const MIGRATIONS = new URL('../migrations/', import.meta.url)
-const readerMigration = await Deno.readTextFile(new URL('20261017210000_get340_insyt_search_reader.sql', MIGRATIONS))
-const reviewsMigration = await Deno.readTextFile(new URL('20261018120000_get340_insyt_reviews.sql', MIGRATIONS))
+const readerMigration = await Deno.readTextFile(new URL('20261017220908_get340_insyt_search_reader.sql', MIGRATIONS))
+const reviewsMigration = await Deno.readTextFile(new URL('20261018114553_get340_insyt_reviews.sql', MIGRATIONS))
 
 const CREATOR = '11111111-1111-1111-1111-111111111111'
 const MARKER = 'GET340_PAID'

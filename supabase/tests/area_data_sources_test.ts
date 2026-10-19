@@ -3,7 +3,7 @@
 //
 // Runs the area migrations (GET-335, GET-340, GET-343) on the same minimal
 // stand-in as search_enhancements_test.ts, then
-// 20261019120000_get345_area_data_sources.sql, and asserts:
+// 20261019014314_get345_area_data_sources.sql, and asserts:
 //   - save_area with p_data_sources stores the rows (scalar columns, array order);
 //   - NULL keeps the stored rows, '[]' clears them, an array replaces them;
 //   - the checks reject an unknown type, an unknown or empty role, a type twice,
@@ -22,12 +22,12 @@ import { PGlite } from 'npm:@electric-sql/pglite@0.2.17'
 const MIGRATIONS = new URL('../migrations/', import.meta.url)
 const read = (f: string) => Deno.readTextFile(new URL(f, MIGRATIONS))
 const before = await Promise.all([
-  read('20261016140000_social_search_areas.sql'),
-  read('20261017210000_get340_insyt_search_reader.sql'),
-  read('20261018120000_get340_insyt_reviews.sql'),
-  read('20261018150000_get343_search_enhancements.sql'),
+  read('20261016114519_social_search_areas.sql'),
+  read('20261017220908_get340_insyt_search_reader.sql'),
+  read('20261018114553_get340_insyt_reviews.sql'),
+  read('20261018151603_get343_search_enhancements.sql'),
 ])
-const migration = await read('20261019120000_get345_area_data_sources.sql')
+const migration = await read('20261019014314_get345_area_data_sources.sql')
 
 // The columns the earlier migrations read, in their staging types.
 const STAND_IN = `

@@ -70,6 +70,8 @@ declare
   v integer;
   g jsonb := coalesce(p_gates, '{}'::jsonb);
   t jsonb := coalesce(p_targets, '{}'::jsonb);
+  -- a server from before kinds sends none: each question keeps the kind stored for its id
+  old_kinds jsonb := coalesce((select jsonb_object_agg(id, kind) from social_search_area_questions where area_id = p_id), '{}'::jsonb);
 begin
   if p_base_version = 0 then
     insert into social_search_areas (id, name, search_terms, follow_up_instructions, insyt_sports, sort_order,
@@ -121,7 +123,7 @@ begin
   insert into social_search_area_questions (area_id, id, question, options, kind, sort_order)
   select p_id, e.val ->> 'id', e.val ->> 'question',
          array(select jsonb_array_elements_text(coalesce(e.val -> 'options', '[]'::jsonb))),
-         coalesce(e.val ->> 'kind', 'choice'), e.ord - 1
+         coalesce(e.val ->> 'kind', old_kinds ->> (e.val ->> 'id'), 'choice'), e.ord - 1
     from jsonb_array_elements(coalesce(p_questions, '[]'::jsonb)) with ordinality as e (val, ord);
 
   delete from social_search_area_prompts where area_id = p_id;

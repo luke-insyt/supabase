@@ -8,12 +8,12 @@
 -- ============================================================================
 -- 1. social_search_area_channels
 -- ============================================================================
--- platform: typed (no TikTok, decision 2026-10-22). handle: the canonical handle without '@'
+-- platform: typed (no TikTok; Facebook pages added — decisions 2026-10-22). handle: the canonical handle without '@'
 -- (YouTube: the @handle, or the channel id when there is none). channel_id: YouTube's UC… id,
 -- resolved once on save; null on Instagram / X.
 create table if not exists public.social_search_area_channels (
   area_id    text not null references public.social_search_areas (id) on delete cascade,
-  platform   text not null check (platform in ('youtube', 'instagram', 'x')),
+  platform   text not null check (platform in ('youtube', 'instagram', 'facebook', 'x')),
   handle     text not null check (handle ~ '^[A-Za-z0-9._-]{1,100}$'),
   channel_id text check (channel_id is null or channel_id ~ '^UC[A-Za-z0-9_-]{22}$'),
   label      text check (char_length(label) <= 80),
@@ -21,6 +21,10 @@ create table if not exists public.social_search_area_channels (
   sort_order integer not null default 0,
   primary key (area_id, platform, handle)
 );
+
+-- re-run on a DB that has the first version of this table (staging): widen the platform check
+alter table public.social_search_area_channels drop constraint if exists social_search_area_channels_platform_check;
+alter table public.social_search_area_channels add constraint social_search_area_channels_platform_check check (platform in ('youtube', 'instagram', 'facebook', 'x'));
 
 alter table public.social_search_area_channels enable row level security;
 revoke all on table public.social_search_area_channels from anon, authenticated;

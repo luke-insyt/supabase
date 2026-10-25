@@ -5,8 +5,8 @@
 --   * inquiry_proposals.attached_insyt_id — optional; SET NULL if the insyt is
 --     deleted, so the proposal survives;
 --   * a trigger guards it on every write path (the submit RPC's insert and the
---     server's edit update): it must be the Insyter's own, public, published,
---     visible insyt. The server checks first for a field-level message; this is
+--     server's edit update): it must be the Insyter's own, public, visible insyt
+--     in a published status ('live' / 'published', or NULL for legacy rows). The server checks first for a field-level message; this is
 --     the authority;
 --   * the version trigger counts it as content the requester judges, so an
 --     accept made against the old attachment answers `stale` (S5-AC7);
@@ -48,7 +48,7 @@ begin
        and i.visibility = 'public'
        and coalesce(i.is_hidden, false) = false
        and i.insyt_id is not null
-       and coalesce(i.status, '') <> 'draft'
+       and (i.status is null or i.status in ('live', 'published'))
   ) then
     raise exception 'attached insyt must be one of the Insyter''s own published insyts'
       using errcode = 'check_violation';
@@ -176,8 +176,10 @@ begin
 end;
 $$;
 
--- Server-only, like the other inquiry RPCs (stage-1 migration, section 12).
+-- Server-only, like the other inquiry RPCs (stage-1 migration, section 12);
+-- trigger functions are revoked from everyone, as in its section 14.
 revoke execute on function
+  public.inquiry_proposals_check_attached(),
   public.submit_inquiry_proposal(uuid, uuid, text, text, integer, integer, date, integer, uuid)
   from public, anon, authenticated, service_role;
 grant execute on function

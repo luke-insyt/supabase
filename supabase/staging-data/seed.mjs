@@ -220,6 +220,15 @@ async function upsertPublicUsers(idByEmail) {
     if (typeof p.stripe_connect_onboarded === 'boolean') {
       patch.stripe_connect_onboarded = p.stripe_connect_onboarded
     }
+    // GET-75: subscription offer. Setting stripe_subscription_price_id (even a
+    // placeholder) is what makes creator_subscription_offer() return a row, so
+    // the subscribe CTA renders. The three display fields drive the "€X/mo" tag.
+    if (p.subscription_price_usd != null) {
+      patch.subscription_price_usd = p.subscription_price_usd
+      patch.subscription_currency = p.subscription_currency ?? 'eur'
+      patch.subscription_trial_days = p.subscription_trial_days ?? 0
+      patch.stripe_subscription_price_id = p.stripe_subscription_price_id ?? null
+    }
     await sb(`/rest/v1/users?auth_user_id=eq.${authUserId}`, {
       method: 'PATCH',
       headers: { Prefer: 'return=minimal' },

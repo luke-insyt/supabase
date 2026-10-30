@@ -88,14 +88,16 @@ Deno.serve(async (req) => {
     // the lookup pattern in get-insyt-content).
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('id, creator_email, price_eur, creator_auth_user_id')
+      .select('id, creator_email, price_eur, creator_auth_user_id, visibility')
       .eq('insyt_id', insyt_id)
       .maybeSingle()
 
     if (insytError) {
       return json(500, { error: 'insyts_query_failed', details: insytError.message })
     }
-    if (!insyt) {
+    // GET-328: a private insyt can't be rated (S7-AC3), and the web never
+    // confirms one exists. The insyt_ratings trigger is the real guard.
+    if (!insyt || insyt.visibility === 'private') {
       return json(404, { error: 'insyt_not_found' })
     }
 

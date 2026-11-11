@@ -5,6 +5,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
 import { loadOwnProposal, priceRefusal, privateEditFields, publishPrivate, type InquiryProposal } from './inquiry.ts'
+import { agreementRefusal, needsAgreementCheck } from './agreement.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -97,7 +98,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
 
   const { data: userRow } = await svc
     .from('users')
-    .select('is_creator, display_name, bio, webflow_creator_id')
+    .select('is_creator, display_name, bio, webflow_creator_id, agreement_version')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (!userRow?.is_creator) return json(403, { error: 'Not an active creator' })
@@ -110,6 +111,13 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
   }
 
   const action = payload.action || 'submit'
+
+  // GET-357: a new publish needs the current Creator Agreement (see agreement.ts).
+  // Before tag resolution, so a refused submit writes nothing.
+  if (needsAgreementCheck(action, payload)) {
+    const refusal = await agreementRefusal(svc, userRow.agreement_version, log)
+    if (refusal) return json(refusal.status, refusal.body)
+  }
 
   if (action === 'load_draft') {
     const pid = String(payload.inquiry_proposal_id || '').trim()

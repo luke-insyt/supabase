@@ -82,9 +82,9 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     // when a creator lowers the price, `price_eur` is updated (the feed + detail page
     // read it) but the old Stripe Price is NOT rolled, so charging via `stripe_price_id`
     // billed the outdated amount. `price_eur` is the single source of truth for the
-    // displayed price, so build the line item from it via ad-hoc `price_data`. Safe
-    // for this one-off flow specifically: it sets NO `automatic_tax` (only the
-    // subscription checkout does), so there's no product tax_code to preserve.
+    // displayed price, so build the line item from it via ad-hoc `price_data`. The
+    // ad-hoc product carries no tax_code, so Stripe Tax applies the account's
+    // default product tax code + tax behavior (Dashboard → Tax settings).
     // `price_eur` is stored in CENTS (an integer) — the frontend's formatPrice()
     // divides it by 100 for display, and Stripe's unit_amount is also in cents, so
     // it maps across 1:1 with NO further scaling. (399 → €3.99.)
@@ -116,6 +116,9 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     if (insyt.creator_email) {
       form.set('metadata[creator_email]', insyt.creator_email)
     }
+    // Stripe Tax: calculate/collect VAT per the buyer's location, same as the
+    // subscription checkout and the RN server's one-time checkout.
+    form.set('automatic_tax[enabled]', 'true')
     // Show Stripe's native "Add promotion code" field in the embedded checkout.
     // Codes resolve against coupons created in the Stripe dashboard (e.g. a
     // 100%-off coupon for prod smoke-testing — Tax is computed on the

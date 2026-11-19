@@ -143,6 +143,7 @@ Deno.serve(async (req) => {
       const pForm = new URLSearchParams()
       pForm.set('name', (creator.display_name || creator.email || 'Creator') + ' — Subscription')
       pForm.set('metadata[creator_id]', user.id)
+      pForm.set('tax_code', 'txcd_10000000') // GET-458: electronically supplied services
       const prod = await stripe('products', stripeKey, pForm)
       if (!prod.ok) {
         console.error('[set-subscription-price] product create failed', prod.data)
@@ -157,6 +158,7 @@ Deno.serve(async (req) => {
     priceForm.set('unit_amount', String(amountCents))
     priceForm.set('currency', currency)
     priceForm.set('recurring[interval]', 'month')
+    priceForm.set('tax_behavior', 'inclusive') // GET-458: the shown price includes VAT
     priceForm.set('metadata[creator_id]', user.id)
     const price = await stripe('prices', stripeKey, priceForm)
     if (!price.ok) {

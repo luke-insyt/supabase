@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
+import { applyBuyerToSession, attachVatIdToCustomer, checkVatId } from '../_shared/vat.ts'
 
 // Start an embedded Stripe Checkout session in subscription mode, so the
 // signed-in user can subscribe to a creator. Mirrors create-checkout-session
@@ -7,7 +8,8 @@ import { withLogging } from '../_shared/log.ts'
 // Stripe-webhook workflow reads metadata.creator_id / metadata.subscriber_id
 // to upsert public.creator_subscriptions on checkout.session.completed.
 //
-// Body: { creator_id }  — the creator's auth uid (users.auth_user_id).
+// Body: { creator_id, vat_id? }  — the creator's auth uid (users.auth_user_id);
+// vat_id = optional EU VAT ID, VIES-checked before the session is created (GET-458).
 //
 // v1: NO Stripe Connect transfer/application fee — revenue is collected on the
 // platform account; payout routing lands with the separate payouts feature.
@@ -48,7 +50,7 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) return json(401, { error: 'Missing Authorization header' })
 
-    const { creator_id } = await req.json().catch(() => ({}))
+    const { creator_id, vat_id } = await req.json().catch(() => ({}))
     if (!creator_id) return json(400, { error: 'Missing creator_id' })
 
     const userClient = createClient(
@@ -96,6 +98,20 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
     if (!stripeKey) return json(500, { error: 'STRIPE_SECRET_KEY not configured' })
 
+    // GET-458: optional EU VAT ID, checked against VIES BEFORE any payment. Invalid →
+    // error (no session); valid or VIES unreachable → attached to the Stripe customer
+    // so Stripe Tax reverse-charges it (see _shared/vat.ts).
+    let vatCustomerId: string | null = null
+    if (typeof vat_id === 'string' && vat_id.trim()) {
+      const vat = await checkVatId(vat_id)
+      if (!vat.ok) {
+        log.info('vat id rejected', { code: vat.code })
+        return json(422, { error: vat.message, code: vat.code })
+      }
+      log.info('vat id accepted', { status: vat.status })
+      vatCustomerId = await attachVatIdToCustomer(stripeKey, user.email, vat.vatId)
+    }
+
     // GET-124: the embedded payment window shows the Stripe *product* name. The
     // subscription product is created once (set-subscription-price) with the
     // creator's display name and never re-synced, so a creator who renames after
@@ -130,7 +146,7 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     form.set('mode', 'subscription')
     form.set('line_items[0][price]', creator.stripe_subscription_price_id)
     form.set('line_items[0][quantity]', '1')
-    form.set('customer_email', user.email)
+    applyBuyerToSession(form, user.email, vatCustomerId)
     // Metadata on BOTH the session (webhook checkout.session.completed) and the
     // subscription object (customer.subscription.* events) so n8n always has the
     // pair without a lookup.
@@ -140,9 +156,9 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     form.set('subscription_data[metadata][subscriber_id]', user.id)
     // Stripe Tax (decision #8): calculate/collect VAT per the subscriber.
     form.set('automatic_tax[enabled]', 'true')
-    // GET-458: EU VAT ID for B2B reverse charge + full billing address for OSS.
-    // (No invoice_creation: subscription mode always invoices.)
-    form.set('tax_id_collection[enabled]', 'true')
+    // GET-458: full billing address for OSS. (No invoice_creation: subscription mode
+    // always invoices.) Stripe's own VAT ID field stays OFF — the VAT ID comes
+    // pre-checked from our UI (vat_id above).
     form.set('billing_address_collection', 'required')
     // Show Stripe's native "Add promotion code" field in the embedded checkout.
     // Codes resolve against coupons created in the Stripe dashboard (e.g. a

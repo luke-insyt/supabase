@@ -140,6 +140,10 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     form.set('subscription_data[metadata][subscriber_id]', user.id)
     // Stripe Tax (decision #8): calculate/collect VAT per the subscriber.
     form.set('automatic_tax[enabled]', 'true')
+    // GET-458: EU VAT ID for B2B reverse charge + full billing address for OSS.
+    // (No invoice_creation: subscription mode always invoices.)
+    form.set('tax_id_collection[enabled]', 'true')
+    form.set('billing_address_collection', 'required')
     // Show Stripe's native "Add promotion code" field in the embedded checkout.
     // Codes resolve against coupons created in the Stripe dashboard (e.g. a
     // forever 100%-off coupon for prod smoke-testing — Tax is computed on the

@@ -7,7 +7,15 @@
 --   3. RPC add_inquiry_email_invites   — locked check-then-insert (total, daily cap, dupes)
 --   4. RPC claim_inquiry_email_invite  — locked invited→joined flip + target insert
 -- All three functions take the same inquiry-row lock, so the "≤ 10 invitees" invariant
--- can't be raced by concurrent adds, target edits or claims.
+-- can't be raced by concurrent adds, target edits or claims. The per-requester daily cap is
+-- serialised separately with a transaction advisory lock keyed on the requester.
+--
+-- 🚨 EXPLICIT TRANSACTION (same rule as get318): our deploy path doesn't wrap a file, and a
+-- half-applied file would leave the definer RPCs callable before the EXECUTE revoke at the end.
+
+begin;
+set local lock_timeout = '3s';
+set local statement_timeout = '30s';
 
 -- ============================================================================
 -- 1. inquiry_email_invites
@@ -32,8 +40,9 @@ create table public.inquiry_email_invites (
   inquiry_closed_at      timestamptz,
   erased_at              timestamptz,
   created_at             timestamptz not null default now(),
+  -- Same shape the server's normalizeInviteEmail enforces: one @, no whitespace or commas.
   constraint inquiry_email_invites_email_shape
-    check (email is null or (email = lower(btrim(email)) and email like '%_@_%'))
+    check (email is null or (email = lower(email) and email ~ '^[^@\s,]+@[^@\s,]+$'))
 );
 
 -- One live invite per address per inquiry; a revoked/expired address can be invited again.
@@ -89,7 +98,8 @@ $$;
 
 -- ============================================================================
 -- 3. add_inquiry_email_invites
---    Returns {ok:true, rows:[...]} or {refused:'not_found'|'audience'|'self'|'dupes'|'total'|'cap', ...}.
+--    Returns {ok:true, rows:[...]} or
+--    {refused:'not_found'|'audience'|'empty'|'malformed'|'self'|'dupes'|'total'|'cap', ...}.
 --    The caller (RN server) has already normalised the addresses; this re-normalises defensively.
 -- ============================================================================
 create or replace function public.add_inquiry_email_invites(
@@ -115,6 +125,11 @@ declare
   v_oldest   timestamptz;
   v_rows     jsonb;
 begin
+  -- Serialise this requester's adds across ALL their inquiries, so parallel requests on
+  -- different inquiries can't each see the same 24 h count (S1-AC5). Taken before the
+  -- inquiry lock; no other path takes this key, so there is no lock-order cycle.
+  perform pg_advisory_xact_lock(hashtextextended('get373_invite_cap:' || coalesce(p_requester::text, ''), 0));
+
   select audience, requester_auth_user_id
     into v_audience, v_owner
     from public.inquiries
@@ -127,12 +142,15 @@ begin
     return jsonb_build_object('refused', 'audience');
   end if;
 
-  select array_agg(distinct lower(btrim(e)))
+  select array_agg(distinct lower(btrim(e, E' \t\r\n')))
     into v_emails
     from unnest(p_emails) as e
-   where btrim(coalesce(e, '')) <> '';
+   where btrim(coalesce(e, ''), E' \t\r\n') <> '';
   if v_emails is null then
-    return jsonb_build_object('refused', 'dupes', 'dupes', '[]'::jsonb);
+    return jsonb_build_object('refused', 'empty');
+  end if;
+  if exists (select 1 from unnest(v_emails) as e where e !~ '^[^@\s,]+@[^@\s,]+$') then
+    return jsonb_build_object('refused', 'malformed');
   end if;
 
   select lower(btrim(email)) into v_self from auth.users where id = p_requester;
@@ -194,24 +212,35 @@ create or replace function public.claim_inquiry_email_invite(
   set search_path = public
 as $$
 declare
-  v_inquiry uuid;
-  v_owner   uuid;
-  v_flipped integer;
+  v_inquiry   uuid;
+  v_owner     uuid;
+  v_status    text;
+  v_moderated timestamptz;
+  v_flipped   integer;
 begin
-  select i.inquiry_id, q.requester_auth_user_id
-    into v_inquiry, v_owner
+  if p_user is null then
+    return jsonb_build_object('claimed', false);
+  end if;
+
+  select i.inquiry_id into v_inquiry
     from public.inquiry_email_invites i
-    join public.inquiries q on q.id = i.inquiry_id
    where i.id = p_invite;
   if not found then
     return jsonb_build_object('claimed', false);
   end if;
-  -- S4-AC5: never the requester.
-  if v_owner = p_user then
+
+  select requester_auth_user_id, status, moderated_at
+    into v_owner, v_status, v_moderated
+    from public.inquiries
+   where id = v_inquiry
+     for update;
+  -- S4-AC5: never the requester. S4-AC1: a closed inquiry's invites are expired, not
+  -- claimable, even in the window before the sweep stamps them.
+  if v_owner is not distinct from p_user
+     or v_status in ('completed', 'archived')
+     or v_moderated is not null then
     return jsonb_build_object('claimed', false);
   end if;
-
-  perform 1 from public.inquiries where id = v_inquiry for update;
 
   update public.inquiry_email_invites
      set status = 'joined', claimed_by = p_user, claimed_at = now()
@@ -243,3 +272,5 @@ grant execute on function
   public.add_inquiry_email_invites(uuid, uuid, text[], timestamptz),
   public.claim_inquiry_email_invite(uuid, uuid)
   to service_role;
+
+commit;

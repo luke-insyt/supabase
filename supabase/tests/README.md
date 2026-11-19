@@ -85,3 +85,24 @@ DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A \
 ```
 Re-run after any migration touching `insyts`, `users`, storage or `insyt_search`, and before
 a release. 3 tests; green on staging 2026-10-18.
+
+## inquiry_email_invites_test.ts + inquiry_email_invites_live_test.ts — GET-373 email invites
+
+**Offline (PGlite, no network/secrets):** runs `20261120090000_get373_inquiry_email_invites.sql`
+on a stand-in (with Supabase's default privileges, so the server-only revokes are really tested)
+and asserts the add/claim RPC refusals, the redefined `inquiry_targets_cap` trigger, the rolling
+24 h cap, the account-deletion cascade and the grants. 18 tests.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 deno test -A supabase/tests/inquiry_email_invites_test.ts
+```
+
+**Live (staging only, after the migration is applied):** PGlite is a single connection, so the
+row-lock / advisory-lock serialisation is proven here with real parallel RPC calls — two adds
+racing at a total of 8 (exactly one wins) and three adds racing the 20/24 h cap (exactly two win).
+Skipped unless `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set; refuses the prod ref;
+self-cleaning (`get373-*@getinsyts.test` throwaways).
+
+```bash
+deno test -A --env-file=<path to getinsyts-native/server/.env> supabase/tests/inquiry_email_invites_live_test.ts
+```

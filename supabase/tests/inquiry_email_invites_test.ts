@@ -33,7 +33,8 @@ create table public.inquiries (
   id uuid primary key default gen_random_uuid(),
   requester_auth_user_id uuid references auth.users (id) on delete set null,
   status text not null default 'draft',
-  audience text not null default 'all_insyters');
+  audience text not null default 'all_insyters',
+  moderated_at timestamptz);
 create table public.inquiry_targets (
   inquiry_id uuid not null references public.inquiries (id) on delete cascade,
   creator_auth_user_id uuid not null references auth.users (id) on delete cascade,
@@ -51,6 +52,10 @@ end; $$;
 create trigger inquiry_targets_cap before insert or update of inquiry_id on public.inquiry_targets
   for each row execute function public.inquiry_targets_cap();
 grant all on all tables in schema public to anon, authenticated;
+-- Supabase's default privileges: every NEW table/function in public is granted to the API roles.
+-- Without these the S1-AC6 revoke checks below could never fail.
+alter default privileges in schema public grant all on tables to anon, authenticated;
+alter default privileges in schema public grant execute on functions to anon, authenticated;
 `
 
 type Fixture = { pg: PGlite; requester: string; inquiry: string }
@@ -71,10 +76,12 @@ async function user(pg: PGlite, email: string): Promise<string> {
   return (await pg.query<{ id: string }>(`insert into auth.users (email) values ($1) returning id`, [email])).rows[0].id
 }
 
-async function add(f: Fixture, emails: string[], who = f.requester, inquiry = f.inquiry) {
+async function add(f: Fixture, emails: string[], who = f.requester, inquiry = f.inquiry, now?: string) {
   return (await f.pg.query<{ r: Record<string, unknown> }>(
-    `select public.add_inquiry_email_invites($1, $2, $3::text[]) as r`,
-    [inquiry, who, emails],
+    now
+      ? `select public.add_inquiry_email_invites($1, $2, $3::text[], $4::timestamptz) as r`
+      : `select public.add_inquiry_email_invites($1, $2, $3::text[]) as r`,
+    now ? [inquiry, who, emails, now] : [inquiry, who, emails],
   )).rows[0].r
 }
 
@@ -239,4 +246,78 @@ Deno.test('server-only: RLS on, no browser-role grants, RPCs callable by service
   assertEquals((await f.pg.query<{ r: boolean }>(
     `select has_function_privilege('service_role', 'public.claim_inquiry_email_invite(uuid, uuid)', 'execute') as r`,
   )).rows[0].r, true)
+})
+
+Deno.test('add refuses empty input and a malformed address (tab, comma, double @)', async () => {
+  const f = await db()
+  assertEquals((await add(f, ['  ', ''])).refused, 'empty')
+  assertEquals((await add(f, ['ok@x.io', 'a\tb@x.io'])).refused, 'malformed')
+  assertEquals((await add(f, ['a,b@x.io'])).refused, 'malformed')
+  assertEquals((await add(f, ['a@b@x.io'])).refused, 'malformed')
+  assertEquals((await add(f, ['\tana@x.io\n'])).ok, true) // surrounding whitespace is trimmed
+  assertEquals(await count(f.pg, `select count(*)::int as n from public.inquiry_email_invites where email = 'ana@x.io'`), 1)
+})
+
+Deno.test('a joined address is refused as a duplicate', async () => {
+  const f = await db()
+  await add(f, ['ana@example.com'])
+  await f.pg.query(`update public.inquiry_email_invites set status = 'joined'`)
+  assertEquals((await add(f, ['ana@example.com'])).refused, 'dupes')
+})
+
+Deno.test('the daily cap is a rolling 24 h window: older invites drop out, revoked ones still count', async () => {
+  const f = await db()
+  const old = new Date(Date.now() - 25 * 3600_000).toISOString()
+  const recent = new Date(Date.now() - 3600_000).toISOString()
+  for (let i = 0; i < 2; i++) {
+    const other = (await f.pg.query<{ id: string }>(
+      `insert into public.inquiries (requester_auth_user_id, status, audience) values ($1, 'open', 'specific') returning id`,
+      [f.requester],
+    )).rows[0].id
+    const ten = Array.from({ length: 10 }, (_, k) => `w${i}-${k}@x.io`)
+    assertEquals((await add(f, ten, f.requester, other, i === 0 ? old : recent)).ok, true)
+  }
+  // In the window: the 10 recent ones (revoked still count). The 10 older than 24 h don't,
+  // so exactly 10 more fit (30 would be refused if the old ones counted) …
+  await f.pg.query(`update public.inquiry_email_invites set status = 'revoked' where email like 'w1-%'`)
+  const ten = Array.from({ length: 10 }, (_, k) => `n${k}@x.io`)
+  assertEquals((await add(f, ten)).ok, true)
+  // … and the 21st in the window is refused, on yet another inquiry.
+  const fresh = (await f.pg.query<{ id: string }>(
+    `insert into public.inquiries (requester_auth_user_id, status, audience) values ($1, 'open', 'specific') returning id`,
+    [f.requester],
+  )).rows[0].id
+  assertEquals((await add(f, ['one-more@x.io'], f.requester, fresh)).refused, 'cap')
+})
+
+Deno.test('the redefined trigger still lets the no-op re-upsert of existing targets through at a total of 10', async () => {
+  const f = await db()
+  const ids = await pick(f, 10)
+  for (const id of ids) {
+    await f.pg.query(
+      `insert into public.inquiry_targets (inquiry_id, creator_auth_user_id) values ($1, $2) on conflict do nothing`,
+      [f.inquiry, id],
+    )
+  }
+  assertEquals(await count(f.pg, `select count(*)::int as n from public.inquiry_targets`), 10)
+})
+
+Deno.test('claim refuses a null user and an inquiry that is completed, archived or taken down', async () => {
+  const f = await db()
+  await add(f, ['ana@example.com'])
+  const invite = (await f.pg.query<{ id: string }>(`select id from public.inquiry_email_invites`)).rows[0].id
+  const ana = await user(f.pg, 'ana@example.com')
+  assertEquals((await f.pg.query<{ r: { claimed: boolean } }>(
+    `select public.claim_inquiry_email_invite($1, null) as r`, [invite],
+  )).rows[0].r.claimed, false)
+  for (const sql of [
+    `update public.inquiries set status = 'completed'`,
+    `update public.inquiries set status = 'archived'`,
+    `update public.inquiries set status = 'unpublished', moderated_at = now()`,
+  ]) {
+    await f.pg.query(sql)
+    assertEquals((await claim(f, invite, ana)).claimed, false)
+    await f.pg.query(`update public.inquiries set status = 'open', moderated_at = null`)
+  }
+  assertEquals((await claim(f, invite, ana)).claimed, true)
 })

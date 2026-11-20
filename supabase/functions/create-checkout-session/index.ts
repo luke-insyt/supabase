@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
+import { applyBuyerToSession, attachVatIdToCustomer, checkVatId } from '../_shared/vat.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -37,7 +38,7 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
       return json(401, { error: 'Missing Authorization header' })
     }
 
-    const { insyt_id } = await req.json()
+    const { insyt_id, vat_id } = await req.json()
     if (!insyt_id) {
       return json(400, { error: 'Missing insyt_id' })
     }
@@ -100,6 +101,20 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
       return json(500, { error: 'STRIPE_SECRET_KEY not configured' })
     }
 
+    // GET-458: optional EU VAT ID, checked against VIES BEFORE any payment. Invalid →
+    // error (no session); valid or VIES unreachable → attached to the Stripe customer
+    // so Stripe Tax reverse-charges it (see _shared/vat.ts).
+    let vatCustomerId: string | null = null
+    if (typeof vat_id === 'string' && vat_id.trim()) {
+      const vat = await checkVatId(vat_id)
+      if (!vat.ok) {
+        log.info('vat id rejected', { code: vat.code })
+        return json(422, { error: vat.message, code: vat.code })
+      }
+      log.info('vat id accepted', { status: vat.status })
+      vatCustomerId = await attachVatIdToCustomer(stripeKey, user.email, vat.vatId)
+    }
+
     // Mirror the metadata shape the existing Payment Link uses, so the
     // `Purchase Completed` n8n workflow (which reads metadata.insyt_id and
     // customer_details.email) grants access without any change.
@@ -113,7 +128,7 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     form.set('line_items[0][price_data][tax_behavior]', 'inclusive')
     form.set('line_items[0][price_data][product_data][tax_code]', 'txcd_10000000')
     form.set('line_items[0][quantity]', '1')
-    form.set('customer_email', user.email)
+    applyBuyerToSession(form, user.email, vatCustomerId)
     form.set('metadata[insyt_id]', insyt.insyt_id)
     if (insyt.creator_email) {
       form.set('metadata[creator_email]', insyt.creator_email)
@@ -121,10 +136,9 @@ Deno.serve(withLogging('create-checkout-session', corsHeaders, async (req, log) 
     // Stripe Tax: calculate/collect VAT per the buyer's location, same as the
     // subscription checkout and the RN server's one-time checkout.
     form.set('automatic_tax[enabled]', 'true')
-    // GET-458: B2B buyers can enter an EU VAT ID (reverse charge; the n8n Purchase
-    // Completed workflow checks it against VIES), and every buyer gets an invoice
-    // with the full billing address OSS needs.
-    form.set('tax_id_collection[enabled]', 'true')
+    // GET-458: every buyer gets an invoice with the full billing address OSS needs.
+    // Stripe's own VAT ID field stays OFF — the VAT ID comes pre-checked from our UI
+    // (vat_id above), so nobody gets reverse charge on an unverified number.
     form.set('invoice_creation[enabled]', 'true')
     form.set('billing_address_collection', 'required')
     // Show Stripe's native "Add promotion code" field in the embedded checkout.

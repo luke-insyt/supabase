@@ -106,3 +106,24 @@ self-cleaning (`get373-*@getinsyts.test` throwaways).
 ```bash
 deno test -A --env-file=<path to getinsyts-native/server/.env> supabase/tests/inquiry_email_invites_live_test.ts
 ```
+
+## get459_open_mode_test.ts — GET-459 "Open for everyone" migration
+
+**Offline (PGlite, no network/secrets):** runs `20261121120000_get459_open_mode.sql` on a stand-in
+with pre-existing rows and asserts the `access_mode` backfill (drafts too, `updated_at` untouched),
+the `released_at` backfill (public inquiry insyts only, GET-73's `updated_at` untouched), every
+branch of the `inquiries_access_mode_sync` trigger, the two checks, `release_inquiry_insyt`
+(€0 for open, Insyter's price for timed, second call → no row, unpublished / public / non-inquiry
+rows skipped), the service_role-only EXECUTE grant, the partial index, and that the file is
+idempotent. 12 tests.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 deno test -A supabase/tests/get459_open_mode_test.ts
+```
+
+The edge-fn side (mode-aware `privateUntil`, `release_price_cents`, the released-open price lock)
+is unit-tested in `supabase/functions/submit-create-insyt/inquiry_test.ts`:
+
+```bash
+DENO_NO_PACKAGE_JSON=1 deno test --allow-env supabase/functions/submit-create-insyt/
+```

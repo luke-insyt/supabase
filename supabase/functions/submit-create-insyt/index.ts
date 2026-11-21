@@ -4,7 +4,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
-import { loadOwnProposal, priceRefusal, privateEditFields, publishPrivate, type InquiryProposal } from './inquiry.ts'
+import { inquiryPrice, isPriceLocked, loadOwnProposal, privateEditFields, publishPrivate, type InquiryProposal } from './inquiry.ts'
 import { agreementRefusal, needsAgreementCheck } from './agreement.ts'
 
 const corsHeaders = {
@@ -199,15 +199,16 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
 
   // ── Inquiry deliveries (GET-328) ─────────────────────────────────────────
   // Every create/edit action on an inquiry draft or insyt passes this gate:
-  // the proposal must be the caller's, the price is the proposal's (S5-AC4),
+  // the proposal must be the caller's, the price is the proposal's (S5-AC4) —
+  // or €0 for good once an open-mode insyt is released (GET-459 §5, S5-AC5) —
   // and a private insyt never reaches n8n (see inquiry.ts).
   const inquiry = await resolveInquiry(svc, action, payload, authUserId)
   if (inquiry && 'error' in inquiry) return json(inquiry.status, { error: inquiry.error })
   if (inquiry) {
-    const refusal = priceRefusal(inquiry.price_cents, payload)
-    if (refusal) return json(400, { error: refusal })
-    payload.price_cents = inquiry.price_cents
-    payload.is_free = false
+    const price = inquiryPrice(inquiry, payload)
+    if (!price.ok) return json(price.status, price.body)
+    payload.price_cents = price.price_cents
+    payload.is_free = price.is_free
     payload.inquiry_proposal_id = inquiry.id
   }
 
@@ -406,14 +407,17 @@ async function resolveInquiry(
   const isEdit = action === 'update_published' || action === 'confirm_update'
   const ref = String(payload.insyt_id || '').trim()
   let rowPid: string | null = null
+  let priceLocked = false
   if (ref && (isEdit || uuidRe.test(ref))) {
     const { data, error } = await svc
       .from('insyts')
-      .select('inquiry_proposal_id')
+      .select('inquiry_proposal_id, released_at, release_price_cents')
       .eq(isEdit ? 'insyt_id' : 'id', ref)
       .maybeSingle()
     if (error) return { error: error.message, status: 500 }
     rowPid = (data?.inquiry_proposal_id as string | null) ?? null
+    // GET-459 §5: read from the stored row, never the payload, so a client can't unlock it.
+    priceLocked = isPriceLocked(data as { released_at: string | null; release_price_cents: number | null } | null)
   }
   const asked = String(payload.inquiry_proposal_id || '').trim() || null
   if (asked && !uuidRe.test(asked)) return { error: 'inquiry_proposal_id must be a UUID', status: 400 }
@@ -421,7 +425,9 @@ async function resolveInquiry(
   if (asked && !rowPid && isEdit) return { error: 'This insyt isn’t an inquiry delivery', status: 400 }
   const pid = rowPid || asked
   if (!pid) return null
-  return await loadOwnProposal(svc, pid, authUserId)
+  const proposal = await loadOwnProposal(svc, pid, authUserId)
+  if ('error' in proposal) return proposal
+  return { ...proposal, price_locked: priceLocked }
 }
 
 // Resume the draft of one proposal (the RN create screen opened from it).

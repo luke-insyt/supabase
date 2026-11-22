@@ -175,8 +175,16 @@ export function publicThumbnailUrl(cover: { bucket?: string; path?: string } | n
   return `${Deno.env.get('SUPABASE_URL') || ''}/storage/v1/object/public/${cover.bucket}/${cover.path}`
 }
 
-// The derived fields n8n's `is_edit` re-sync would rewrite on an edit; a
-// private insyt skips that re-sync, so its edits set them here instead.
+// GET-459 (feature §4.5, §5.2): an edit of ANY inquiry insyt — private, or
+// released public by the RN server — skips n8n's `is_edit` re-sync. No released
+// inquiry insyt has a Webflow item, and the re-sync would create a CMS item and
+// a payment link for it. Keyed on the inquiry origin, not on visibility.
+export function skipsWebflowResync(stored: { inquiry_proposal_id?: string | null; visibility?: string | null }): boolean {
+  return !!stored.inquiry_proposal_id || stored.visibility === 'private'
+}
+
+// The derived fields n8n's `is_edit` re-sync would rewrite on an edit; an
+// insyt that skips that re-sync (skipsWebflowResync) sets them here instead.
 export function privateEditFields(payload: {
   cover?: { bucket?: string; path?: string } | null
   full_text?: string

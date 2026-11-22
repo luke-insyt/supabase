@@ -4,7 +4,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
-import { inquiryPrice, isPriceLocked, loadOwnProposal, privateEditFields, publishPrivate, type InquiryProposal } from './inquiry.ts'
+import { inquiryPrice, isPriceLocked, loadOwnProposal, privateEditFields, publishPrivate, skipsWebflowResync, type InquiryProposal } from './inquiry.ts'
 import { agreementRefusal, needsAgreementCheck } from './agreement.ts'
 
 const corsHeaders = {
@@ -645,6 +645,8 @@ type OwnedInsyt = {
   tags: string[] | null
   thumbnail_url: string | null
   visibility: string | null
+  // GET-459: set on an inquiry delivery — its edits never re-sync to Webflow
+  inquiry_proposal_id: string | null
 }
 
 type OwnerGate = OwnedInsyt | { error: string; status: number }
@@ -662,7 +664,7 @@ async function assertOwner(
   const { data, error } = await svc
     .from('insyts')
     .select(
-      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility',
+      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility, inquiry_proposal_id',
     )
     .eq('insyt_id', insytId)
     .maybeSingle()
@@ -724,12 +726,13 @@ function buildPublishedRow(payload: Payload, tags: string[]) {
   }
 }
 
-// GET-328: a private insyt skips the n8n is_edit re-sync, which is what
-// rewrites the public thumbnail URL and the read time on a public edit — so
-// set them here (else the cover becomes a bare storage path).
+// GET-328 / GET-459: an inquiry insyt (private or released) skips the n8n
+// is_edit re-sync, which is what rewrites the public thumbnail URL and the read
+// time on a public edit — so set them here (else the cover becomes a bare
+// storage path).
 function editRow(stored: OwnedInsyt, payload: Payload, tags: string[]) {
   const row = buildPublishedRow(payload, tags)
-  return stored.visibility === 'private' ? { ...row, ...privateEditFields(payload) } : row
+  return skipsWebflowResync(stored) ? { ...row, ...privateEditFields(payload) } : row
 }
 
 // No-op guard (D-5): true when the submitted editable fields + media are
@@ -865,9 +868,10 @@ async function persistEditAndRepublish(
   // Re-run publish (fire the n8n create-insyt webhook with is_edit:true). The
   // row is already saved (source of truth, D-2); a re-sync failure is logged
   // and surfaced as a non-blocking warning rather than losing the edit.
-  // A private insyt (GET-328) has no CMS item or payment link to re-sync, and
-  // the pipeline would create both — the saved row is the whole edit.
-  if (N8N_CREATE_INSYT_URL && stored.visibility !== 'private') {
+  // An inquiry insyt (GET-328 private; GET-459 released too) has no CMS item or
+  // payment link to re-sync, and the pipeline would create both — the saved row
+  // is the whole edit.
+  if (N8N_CREATE_INSYT_URL && !skipsWebflowResync(stored)) {
     const forwardBody = buildCreateForwardBody({
       authUserId: args.authUserId,
       creatorEmail: args.creatorEmail,

@@ -10,6 +10,7 @@ import {
   publicThumbnailUrl,
   readTimeMin,
   releasePriceCents,
+  skipsWebflowResync,
 } from './inquiry.ts'
 
 Deno.test('priceRefusal: the fixed price may be echoed, never changed or made free (S5-AC4)', () => {
@@ -87,4 +88,15 @@ Deno.test('private edits rebuild the public cover URL and read time (no n8n re-s
   assertEquals(String(publicThumbnailUrl({ bucket: 'insyt-thumbnails', path: 'u/c/cover.jpg' })).endsWith('/storage/v1/object/public/insyt-thumbnails/u/c/cover.jpg'), true)
   const f = privateEditFields({ cover: null, full_text: '<p>' + 'w '.repeat(250) + '</p>', description: '' })
   assertEquals(f, { thumbnail_url: null, read_time_min: 2 })
+})
+
+Deno.test('skipsWebflowResync: any inquiry insyt — private or released — never re-syncs to Webflow (GET-459 §5.2)', () => {
+  assertEquals(skipsWebflowResync({ inquiry_proposal_id: 'p-1', visibility: 'private' }), true)
+  // released by the RN server: public now, still no Webflow item
+  assertEquals(skipsWebflowResync({ inquiry_proposal_id: 'p-1', visibility: 'public' }), true)
+  // an ordinary public insyt keeps its n8n re-sync
+  assertEquals(skipsWebflowResync({ inquiry_proposal_id: null, visibility: 'public' }), false)
+  assertEquals(skipsWebflowResync({ visibility: 'public' }), false)
+  // belt and braces: a private row without an origin still never leaves the app
+  assertEquals(skipsWebflowResync({ inquiry_proposal_id: null, visibility: 'private' }), true)
 })

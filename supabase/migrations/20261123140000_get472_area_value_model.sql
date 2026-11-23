@@ -10,7 +10,7 @@
 -- RLS on, no policies, no anon/authenticated grants. Re-runnable.
 
 -- ============================================================================
--- 1. bands: A..G ascending by sort_order; the last has no upper limit (max_eur null)
+-- 1. bands: A..I ascending by sort_order; the last has no upper limit (max_eur null)
 -- ============================================================================
 create table if not exists public.social_search_area_value_bands (
   area_id    text not null references public.social_search_areas (id) on delete cascade,

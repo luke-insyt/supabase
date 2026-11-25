@@ -45,7 +45,13 @@ Deno.test('needsAgreementCheck: a blank proposal id is no delivery, so it cannot
 Deno.test('agreementRefusal: the current version passes', async () => {
   const { svc, seen } = fakeSvc('v1.1')
   assertEquals(await agreementRefusal(svc, 'v1.1'), null)
-  assertEquals(seen, [['from', 'agreement_versions'], ['select', 'version'], ['eq', 'is_current', true]])
+  // GET-470: filtered by type, or a current buyer_terms/privacy row breaks maybeSingle().
+  assertEquals(seen, [
+    ['from', 'agreement_versions'],
+    ['select', 'version'],
+    ['eq', 'document_type', 'insyter_agreement'],
+    ['eq', 'is_current', true],
+  ])
 })
 
 Deno.test('agreementRefusal: a stale or missing version is 409 with current_version', async () => {

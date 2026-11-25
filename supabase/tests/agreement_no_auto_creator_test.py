@@ -63,8 +63,9 @@ try:
     import time
     time.sleep(1)  # let the auth->public.users trigger create the row
 
-    # Current agreement version.
-    c, rows = call("GET", "/rest/v1/agreement_versions?select=version&is_current=eq.true")
+    # Current Insyter Agreement version. GET-470: filtered by document_type — once buyer_terms /
+    # privacy have their own current row, an unfiltered read returns several.
+    c, rows = call("GET", "/rest/v1/agreement_versions?select=version&document_type=eq.insyter_agreement&is_current=eq.true")
     version = rows[0]["version"] if isinstance(rows, list) and rows else None
     check("found current agreement version", bool(version))
 
@@ -87,6 +88,8 @@ try:
 finally:
     print("TEARDOWN")
     if uid:
+        # GET-470: the terms_acceptances ledger row can't be deleted (append-only); deleting the
+        # auth user anonymises it (and the legacy row) via on_auth_user_deleted_anonymise_terms.
         call("DELETE", f"/rest/v1/agreement_acceptances?auth_user_id=eq.{uid}")
         call("DELETE", "/auth/v1/admin/users/" + uid)
     print(f"\nRESULT: {len(ok)} passed, {len(fail)} failed")

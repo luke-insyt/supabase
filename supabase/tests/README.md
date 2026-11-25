@@ -127,3 +127,32 @@ is unit-tested in `supabase/functions/submit-create-insyt/inquiry_test.ts`:
 ```bash
 DENO_NO_PACKAGE_JSON=1 deno test --allow-env supabase/functions/submit-create-insyt/
 ```
+
+## GET-470 — legal registry + acceptance ledger
+
+**Offline (PGlite, no network/secrets):** `get470_legal_registry_test.ts` runs the three GET-470
+migrations (`20261125120000` P0, `20261125121000` migration A, `20261125122000` migration B) on a
+stand-in built from the real GET-330 / GET-357 / GET-332 §1 migrations and asserts the v1.1 guard,
+per-type uniqueness + one current per type, registry immutability (incl. delete/truncate), API
+grants, every RPC (sha copy, `terms_changed`, `ref_once`, null-current), append-only ledger +
+anonymise path, user deletion anonymising legacy + ledger rows, purchase stamps in both insert
+orders (GET-332 anonymity still green), `purchases_rn_session_once`, notices per type,
+`submit_inquiry_proposal` (D-8) and the legacy backfill. 22 tests, ~7 s.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A supabase/tests/get470_legal_registry_test.ts
+```
+
+**Live on staging (PostgREST, after migration B is applied):** `legal_registry_test.py`
+(read-mostly: shape, pinned v1.0 hash = served bytes, grants, 42501 on every RPC) and
+`legal_ledger_test.py` (writes PERMANENT ledger rows for throwaway users, deleted — i.e.
+anonymised — in teardown). Both refuse the prod ref.
+
+```bash
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/legal_registry_test.py
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/legal_ledger_test.py
+```
+
+**psql:** `sql/legal_v11_guard.sql` (read-only; safe on prod for the P0 dry-run) and
+`sql/legal_destructive.sql` (Supabase branch / local DB only — refuses the staging and prod hosts;
+rolled back at the end).

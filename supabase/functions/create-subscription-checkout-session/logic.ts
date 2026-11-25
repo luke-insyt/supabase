@@ -11,7 +11,9 @@
 // lib/terms-gate.ts requireCheckoutConsent, both reading buyer_terms_status):
 //   1. the user hasn't accepted the current buyer_terms → 409 { error: 'terms_outdated', current_version }
 //   2. consent.terms_version / consent.waiver_version ≠ current → 409 { error: 'terms_changed' }
-//   3. consent.waiver_accepted !== true → 400 { error: 'waiver_required' }
+// The waiver itself is consented to in Stripe's required Terms checkbox (custom_text
+// carries the sentence); the RN webhook records it only when session.consent says
+// accepted (2026-11-25: one checkbox in the checkout instead of an in-app pre-step).
 // Null-current rule: a type with no current version is "not live yet" and is skipped.
 // Then the session gets consent_collection.terms_of_service = required, the Terms link +
 // waiver sentence as custom_text.terms_of_service_acceptance, and the consent metadata on
@@ -89,9 +91,6 @@ export function consentRefusal(status: TermsStatus, consent: Consent | null | un
   }
   if (status.withdrawal_waiver !== null && consent?.waiver_version !== status.withdrawal_waiver) {
     return { status: 409, body: { error: 'terms_changed' } }
-  }
-  if (status.withdrawal_waiver !== null && consent?.waiver_accepted !== true) {
-    return { status: 400, body: { error: 'waiver_required' } }
   }
   return null
 }

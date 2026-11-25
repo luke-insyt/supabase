@@ -12,6 +12,9 @@
 //     `inquiry_proposal_id` can't use the exemption as a bypass — resolveInquiry
 //     rejects any id that isn't the caller's own proposal.
 //   * No current version at all → 500 + alert: blocking is the safe default.
+//   * GET-470: the current version is read for document_type = 'insyter_agreement' only —
+//     other legal documents (buyer_terms, privacy, …) have their own current row, and an
+//     unfiltered maybeSingle() would error once they do (legal-terms-acceptance feature §2.2).
 // Design: webflow-app-documentation/features/agreement-rollout/feature.md §3.1.
 // Separate from index.ts because index.ts calls Deno.serve on load, so it can't
 // be imported by a test.
@@ -48,6 +51,7 @@ export async function agreementRefusal(
   const { data, error } = await svc
     .from('agreement_versions')
     .select('version')
+    .eq('document_type', 'insyter_agreement')
     .eq('is_current', true)
     .maybeSingle()
   const current = (data as { version: string } | null)?.version

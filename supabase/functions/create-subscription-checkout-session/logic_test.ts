@@ -44,9 +44,9 @@ Deno.test('consentRefusal: consent for another version → 409 terms_changed', (
   assertEquals(consentRefusal(live, undefined), { status: 409, body: { error: 'terms_changed' } })
 })
 
-Deno.test('consentRefusal: waiver not ticked → 400 waiver_required', () => {
-  assertEquals(consentRefusal(live, { ...good, waiver_accepted: false }), { status: 400, body: { error: 'waiver_required' } })
-  assertEquals(consentRefusal(live, { ...good, waiver_accepted: 'true' }), { status: 400, body: { error: 'waiver_required' } })
+Deno.test('consentRefusal: the legacy waiver tick no longer blocks (the waiver lives in Stripe)', () => {
+  assertEquals(consentRefusal(live, { ...good, waiver_accepted: false }), null)
+  assertEquals(consentRefusal(live, { terms_version: 'v2.0', waiver_version: 'v1.0' }), null)
 })
 
 Deno.test('consentRefusal: current consent passes; null-current types are skipped', () => {

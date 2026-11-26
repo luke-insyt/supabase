@@ -160,3 +160,33 @@ SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/lega
 **psql:** `sql/legal_v11_guard.sql` (read-only; safe on prod for the P0 dry-run) and
 `sql/legal_destructive.sql` (Supabase branch / local DB only — refuses the staging and prod hosts;
 rolled back at the end).
+
+## GET-486 B3 — deductions & holds ledger (`insyter_deductions`)
+
+**Offline (PGlite, no network/secrets):** `get486_insyter_deductions_test.ts` runs
+`20261126160000_get486_insyter_deductions.sql` on a stand-in (users, insyts, purchases,
+subscription_invoices, creator_payouts + items with their unique indexes) and asserts
+`record_insyter_deduction` (ownership, reason 1–500, `rule_ref` for claims, hold release = same
+amount + once, correction ≤ remaining, refund/chargeback once per sale, GET-487's `stripe` shape),
+immutability (no update except settle-once, no delete/truncate, service role SELECT-only), the
+derived status of `insyter_deductions_for`, `create_payout_with_settlement` (one transaction; a
+hold / settled / foreign row rolls the payout back; 23505 stays), the grants, AC5.8 (no FK to
+users) and idempotency. 12 tests, ~3 s.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A supabase/tests/get486_insyter_deductions_test.ts
+```
+
+**Live on staging (PostgREST, after the migration is applied):** `legal_deductions_test.py` —
+hold/release/claim/correction rules, derived status, PATCH/DELETE refused with the service key,
+42501 for anon/authenticated on every RPC, no RLS read with a real token, and the account delete
+leaving the rows unchanged. It never records a payout (a payout references `users` with no
+ON DELETE, so the throwaway would become undeletable). Rows are immutable, so the throwaway's rows
+stay; refuses the prod ref.
+
+```bash
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/legal_deductions_test.py
+```
+
+`sql/legal_destructive.sql` gained a B3 block (delete/truncate/update refused, user delete keeps
+the row); it skips until the table exists on the branch.

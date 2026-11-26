@@ -105,4 +105,68 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------- GET-486 B3 (AC5.4, AC5.8)
+-- insyter_deductions: delete / truncate / non-settle update refused (also as service_role), and
+-- deleting an Insyter with deduction rows succeeds and leaves them unchanged (no FK to users).
+-- Skipped until 20261126160000_get486_insyter_deductions.sql is applied on the branch.
+do $$
+declare
+  u      uuid := gen_random_uuid();
+  d      uuid;
+  raised boolean;
+  before jsonb;
+begin
+  if to_regclass('public.insyter_deductions') is null then
+    raise notice 'SKIP (GET-486 B3): insyter_deductions not present';
+    return;
+  end if;
+  insert into auth.users (id, email, aud, role) values
+    (u, 'get486-destructive-insyter@getinsyts.test', 'authenticated', 'authenticated');
+  if not exists (select 1 from public.users where auth_user_id = u) then
+    insert into public.users (auth_user_id, email) values (u, 'get486-destructive-insyter@getinsyts.test');
+  end if;
+  d := public.record_insyter_deduction(u, u, 'hold', 500, null, null, null, 'destructive test', null, null);
+  select to_jsonb(x) into before from public.insyter_deductions x where x.id = d;
+
+  set local role service_role;
+  begin
+    delete from public.insyter_deductions where id = d;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC5.4): delete from insyter_deductions as service_role did not raise'; end if;
+  reset role;
+
+  begin
+    delete from public.insyter_deductions where id = d;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC5.4): delete from insyter_deductions did not raise'; end if;
+
+  begin
+    truncate public.insyter_deductions;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC5.4): truncate insyter_deductions did not raise'; end if;
+
+  begin
+    update public.insyter_deductions set reason = 'changed' where id = d;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC5.4): insyter_deductions reason update did not raise'; end if;
+  raise notice 'PASS (AC5.4): deductions delete/truncate/update refused';
+
+  -- AC5.8: the account delete succeeds and the row is kept unchanged.
+  delete from public.users where auth_user_id = u;
+  delete from auth.users where id = u;
+  if (select to_jsonb(x) from public.insyter_deductions x where x.id = d) is distinct from before then
+    raise exception 'FAIL (AC5.8): the deduction row changed or vanished on user delete';
+  end if;
+  raise notice 'PASS (AC5.8): user delete succeeded, deduction row unchanged';
+end;
+$$;
+
 rollback;

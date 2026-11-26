@@ -4,7 +4,7 @@ begin; select set_config('app.legal_document_type', 'buyer_terms', true), set_co
 -- Replaces GET-357's agreement-make-current.sql, which cleared EVERY current row and would
 -- have un-currented every other document type (feature.md §2.2 hazard, §2.7).
 --
--- document_type: buyer_terms | insyter_agreement | privacy | withdrawal_waiver
+-- document_type: buyer_terms | content_rules | insyter_agreement | privacy | withdrawal_waiver
 --
 -- NOT a migration, on purpose: it lives outside migrations/ so a flip can never reach a
 -- project through `db push` or a branch merge. Run it by hand, per project, staging first:
@@ -31,6 +31,9 @@ begin; select set_config('app.legal_document_type', 'buyer_terms', true), set_co
 --     server/scripts/legal-seed-fixtures.ts so the fixture users stay current.
 --   * insyter_agreement: every Insyter not on it must re-accept before publishing or sending
 --     a proposal; the RN admin notify (POST /api/cs/agreement/notify) emails them.
+--   * content_rules (GET-486): every publish, delivery, content edit and unhide needs the five
+--     ticks from then on. Make it current ONLY after the app with the rules panel is deployed
+--     in that environment, or every publish from an older client gets 409.
 -- Undo: run it again with the previous version of the same type.
 -- ============================================================================
 
@@ -50,7 +53,7 @@ begin
   if t is null or v is null then
     raise exception 'legal-make-current: set the document type and version on line 1';
   end if;
-  if t not in ('buyer_terms', 'insyter_agreement', 'privacy', 'withdrawal_waiver') then
+  if t not in ('buyer_terms', 'content_rules', 'insyter_agreement', 'privacy', 'withdrawal_waiver') then
     raise exception 'legal-make-current: unknown document type %', t;
   end if;
   select count(*) into n

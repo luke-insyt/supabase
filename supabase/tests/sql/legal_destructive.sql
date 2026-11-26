@@ -7,7 +7,8 @@
 -- GET-486 A1 (= GET-470 P7) dropped the legacy table; re-run after that migration (AC2.5): the
 -- user-delete block must still pass with the ledger as the only acceptance record.
 --
--- The same cases run offline on PGlite in supabase/tests/get470_legal_registry_test.ts.
+-- The same cases run offline on PGlite in supabase/tests/get470_legal_registry_test.ts and
+-- (GET-486 B2) supabase/tests/get486_content_rules_test.ts.
 
 -- ---------------------------------------------------------------- refuse live projects
 -- Direct host db.<ref>.supabase.co or pooler user postgres.<ref>: both carry the project ref.
@@ -197,6 +198,73 @@ begin
   if r.note is distinct from 'the notice' then raise exception 'FAIL (AC4.10): the note was not kept'; end if;
   raise notice 'PASS (AC4.10, D-9): reporter delete succeeded (confirmations table present: %), report kept with marker',
     to_regclass('public.insyt_rules_confirmations') is not null;
+end;
+$$;
+
+-- ---------------------------------------------------------------- GET-486 B2 (AC3.4, AC3.9, D-9)
+-- insyt_rules_confirmations: truncate/delete/update refused; deleting a user with confirmations
+-- succeeds and nulls their IP/UA (auth_user_id kept raw); with B4's insyt_reports present the
+-- same follow-up trigger also anonymises the reporter (D-9: either merge order).
+do $$
+declare
+  u      uuid := gen_random_uuid();
+  sha_b  text := repeat('b', 64);
+  raised boolean;
+  r      record;
+  n      integer := 0;
+begin
+  reset role;  -- the block above may end as service_role (set local)
+  insert into auth.users (id, email, aud, role) values
+    (u, 'get486-destructive-gone@getinsyts.test', 'authenticated', 'authenticated');
+  update public.agreement_versions set is_current = false where document_type = 'content_rules' and is_current;
+  insert into public.agreement_versions (document_type, version, title, url, effective_date, is_current, sha256)
+  values ('content_rules', 'vtest-b2', 'Rules test', 'https://example.test/r.html', current_date, true, sha_b);
+
+  set local role service_role;
+  perform public.record_rules_confirmation(u, gen_random_uuid(), null, 'vtest-b2',
+    public.content_rules_tick_ids(), 'publish', 0, '203.0.113.5', 'UA');
+  if to_regclass('public.insyt_reports') is not null then
+    execute 'insert into public.insyt_reports (insyt_row_id, reason, note, reporter_auth_user_id, reporter_email, reporter_ip)
+             values (gen_random_uuid(), ''other'', ''kept'', $1, ''get486-destructive-gone@getinsyts.test'', ''203.0.113.6'')'
+      using u;
+  end if;
+
+  begin
+    truncate public.insyt_rules_confirmations;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC3.4): truncate insyt_rules_confirmations did not raise'; end if;
+  begin
+    delete from public.insyt_rules_confirmations where auth_user_id = u;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC3.4): delete from insyt_rules_confirmations did not raise'; end if;
+  begin
+    update public.insyt_rules_confirmations set content_rev = 9 where auth_user_id = u;
+    raised := false;
+  exception when others then raised := true;
+  end;
+  if not raised then raise exception 'FAIL (AC3.4): confirmation update did not raise'; end if;
+  raise notice 'PASS (AC3.4): confirmations truncate/delete/update refused';
+  reset role;
+
+  delete from auth.users where id = u;
+  for r in select * from public.insyt_rules_confirmations where auth_user_id = u loop
+    n := n + 1;
+    if r.ip is not null or r.user_agent is not null or r.anonymised_at is null then
+      raise exception 'FAIL (AC3.9): confirmation % not anonymised', r.id;
+    end if;
+  end loop;
+  if n = 0 then raise exception 'FAIL (AC3.9): the deleted user''s confirmation vanished (must be kept)'; end if;
+  if to_regclass('public.insyt_reports') is not null then
+    execute 'select count(*) from public.insyt_reports where note = ''kept'' and reporter_auth_user_id is null
+               and reporter_email is null and reporter_ip is null and reporter_deleted_at is not null' into n;
+    if n <> 1 then raise exception 'FAIL (AC4.10, D-9): reporter not anonymised'; end if;
+    raise notice 'PASS (AC4.10, D-9): reporter anonymised by the same trigger';
+  end if;
+  raise notice 'PASS (AC3.9, D-9): user delete succeeded, confirmations kept and anonymised';
 end;
 $$;
 

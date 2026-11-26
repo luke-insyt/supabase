@@ -6,10 +6,21 @@ import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
 import { inquiryPrice, isPriceLocked, loadOwnProposal, privateEditFields, publishPrivate, skipsWebflowResync, type InquiryProposal } from './inquiry.ts'
 import { agreementRefusal, needsAgreementCheck } from './agreement.ts'
+import {
+  contentChanged,
+  currentRulesVersion,
+  needsRulesForSubmit,
+  parseRulesConfirmation,
+  recordRulesConfirmation,
+  rulesRefusal,
+  rulesRelevant,
+  type RulesConfirmation,
+} from './rules.ts'
+import { requestMeta, SERVER_SECRET_HEADER, type RequestMeta } from '../_shared/request-meta.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Headers': `authorization, apikey, content-type, x-client-info, ${SERVER_SECRET_HEADER}`,
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
@@ -57,6 +68,18 @@ type Payload = {
   pdfs?: Attachment[]
   message?: string         // confirm_update: creator's optional note to buyers (GET-71)
   inquiry_proposal_id?: string  // GET-328: delivering against an accepted inquiry proposal
+  // GET-486 B2: the five Content & Image Rules ticks (see rules.ts)
+  rules_confirmation?: unknown
+  // GET-486 B2: the user's IP / UA, trusted only with a valid x-gi-server-secret (request-meta.ts)
+  ip?: unknown
+  user_agent?: unknown
+}
+
+// GET-486 B2: what the rules gate resolved for this request (null-current → version null).
+type RulesState = {
+  version: string | null
+  confirmation: RulesConfirmation | null
+  meta: RequestMeta
 }
 
 const N8N_CREATE_INSYT_URL = (Deno.env.get('N8N_CREATE_INSYT_URL') || '').trim()
@@ -117,6 +140,26 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
   if (needsAgreementCheck(action, payload)) {
     const refusal = await agreementRefusal(svc, userRow.agreement_version, log)
     if (refusal) return json(refusal.status, refusal.body)
+  }
+
+  // GET-486 B2: the Content & Image Rules — early check, no write (see rules.ts). A publish or
+  // delivery must carry the ticks; an edit's are validated whenever present and required later,
+  // only if the edit changes content.
+  let rules: RulesState | null = null
+  if (rulesRelevant(action)) {
+    const cur = await currentRulesVersion(svc)
+    if (cur.error) {
+      log.error('content_rules read failed', { err: cur.error })
+      return json(500, { error: 'rules_check_failed' })
+    }
+    const refusal = rulesRefusal(cur.version, payload.rules_confirmation, needsRulesForSubmit(action))
+    if (refusal) return json(refusal.status, refusal.body)
+    const parsed = parseRulesConfirmation(payload.rules_confirmation)
+    rules = {
+      version: cur.version,
+      confirmation: cur.version && parsed && parsed !== 'invalid' ? parsed : null,
+      meta: requestMeta(req.headers, payload, Deno.env.get('GI_SERVER_SECRET')),
+    }
   }
 
   if (action === 'load_draft') {
@@ -181,7 +224,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
 
   // ── Tags (GET-190) ─────────────────────────────────────────────────────────
   // Resolve ONCE here, before any row is built, so every write path below stores
-  // canonical labels. Must run before isNoOpEdit's comparison (buildPublishedRow)
+  // canonical labels. Must run before diffEdit's comparison (buildPublishedRow)
   // or a re-save of unchanged tags would look like a change and re-fire the n8n
   // republish + buyer notifications.
   // p_created_by: auth.uid() is NULL under the service key, so the author has to be
@@ -236,6 +279,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
       tags,
       userRow,
       log,
+      rules,
     })
   }
 
@@ -248,6 +292,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
       tags,
       userRow,
       log,
+      rules,
     })
   }
 
@@ -260,16 +305,35 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
     return await submitPrivate(svc, {
       inquiry,
       creatorEmail,
+      authUserId,
       correlation_id,
       payload,
       title,
       tags,
+      rules,
     })
   }
 
   // action === 'submit' — forward to n8n
   if (!N8N_CREATE_INSYT_URL) {
     return json(500, { error: 'N8N_CREATE_INSYT_URL is not configured' })
+  }
+
+  // GET-486 B2: record the confirmation right before the content goes to the pipeline. The row
+  // doesn't exist yet, so it is keyed on correlation_id at content_rev 0. If n8n then fails,
+  // the row stays as evidence of what was confirmed; a retry records another.
+  if (rules?.version && rules.confirmation) {
+    const refused = await recordRulesConfirmation(svc, rules.version, {
+      authUserId,
+      correlationId: correlation_id,
+      rowId: null,
+      confirmation: rules.confirmation,
+      context: 'publish',
+      contentRev: 0,
+      ip: rules.meta.ip,
+      userAgent: rules.meta.userAgent,
+    })
+    if (refused) return json(refused.status, refused.body)
   }
 
   const forwardBody = buildCreateForwardBody({
@@ -458,13 +522,15 @@ async function submitPrivate(
   args: {
     inquiry: InquiryProposal
     creatorEmail: string
+    authUserId: string
     correlation_id: string
     payload: Payload
     title: string
     tags: string[]
+    rules: RulesState | null
   },
 ) {
-  const { inquiry, creatorEmail, payload } = args
+  const { inquiry, creatorEmail, payload, rules } = args
   let insytUuid: string | null = null
   const ref = String(payload.insyt_id || '').trim()
   if (ref) {
@@ -491,6 +557,24 @@ async function submitPrivate(
     if (error) return json(500, { error: error.message })
     if (data && data.status !== 'draft') return json(409, { error: 'This proposal has already been delivered.' })
     insytUuid = (data?.id as string | undefined) ?? crypto.randomUUID()
+  }
+
+  // GET-486 B2 (AC3.5): a delivery is content made visible, so it carries the ticks. Recorded
+  // before the publish (so nothing goes live unconfirmed), with the row id when the draft row
+  // already exists; a brand-new delivery is keyed on its correlation_id like a public publish.
+  if (rules?.version && rules.confirmation) {
+    const { data: existing } = await svc.from('insyts').select('id').eq('id', insytUuid).maybeSingle()
+    const refused = await recordRulesConfirmation(svc, rules.version, {
+      authUserId: args.authUserId,
+      correlationId: args.correlation_id,
+      rowId: existing ? insytUuid : null,
+      confirmation: rules.confirmation,
+      context: 'delivery',
+      contentRev: 0,
+      ip: rules.meta.ip,
+      userAgent: rules.meta.userAgent,
+    })
+    if (refused) return json(refused.status, refused.body)
   }
 
   const failed = await publishPrivate(svc, {
@@ -647,6 +731,8 @@ type OwnedInsyt = {
   visibility: string | null
   // GET-459: set on an inquiry delivery — its edits never re-sync to Webflow
   inquiry_proposal_id: string | null
+  // GET-486 B2: the content revision a rules confirmation covers
+  content_rev: number | null
 }
 
 type OwnerGate = OwnedInsyt | { error: string; status: number }
@@ -664,7 +750,7 @@ async function assertOwner(
   const { data, error } = await svc
     .from('insyts')
     .select(
-      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility, inquiry_proposal_id',
+      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility, inquiry_proposal_id, content_rev',
     )
     .eq('insyt_id', insytId)
     .maybeSingle()
@@ -711,7 +797,7 @@ async function distinctBuyers(svc: Svc, insytId: string): Promise<string[]> {
 // Build the insyts row from the submitted payload, reusing save_draft's field
 // mapping. Used by both update_published and confirm_update so the persisted
 // shape is identical. (Does NOT set status — an edit keeps it published.)
-// tags arrive already canonicalized by resolve_insyt_tags (GET-190) so isNoOpEdit
+// tags arrive already canonicalized by resolve_insyt_tags (GET-190) so diffEdit
 // below compares canonical-vs-canonical.
 function buildPublishedRow(payload: Payload, tags: string[]) {
   return {
@@ -735,16 +821,18 @@ function editRow(stored: OwnedInsyt, payload: Payload, tags: string[]) {
   return skipsWebflowResync(stored) ? { ...row, ...privateEditFields(payload) } : row
 }
 
-// No-op guard (D-5): true when the submitted editable fields + media are
-// byte-identical to what's stored, so saving would change nothing. Compares the
-// mapped row fields and the full attachment set (cover + images + videos +
-// pdfs) by storage path.
-async function isNoOpEdit(
+// No-op guard (D-5): `noop` is true when the submitted editable fields + media
+// are byte-identical to what's stored, so saving would change nothing. Compares
+// the mapped row fields and the full attachment set (cover + images + videos +
+// pdfs) by storage path. GET-486 B2: `content` says whether the CONTENT changed
+// (rules.ts contentChanged) — only then does the edit need the rules ticks and
+// bump insyts.content_rev.
+async function diffEdit(
   svc: Svc,
   stored: OwnedInsyt,
   row: ReturnType<typeof buildPublishedRow>,
   payload: Payload,
-): Promise<boolean> {
+): Promise<{ noop: boolean; content: boolean }> {
   const fieldsSame =
     String(stored.title || '') === row.title &&
     String(stored.abstract || '') === row.abstract &&
@@ -754,7 +842,6 @@ async function isNoOpEdit(
     Number(stored.price_eur || 0) === Number(row.price_eur || 0) &&
     JSON.stringify(stored.tags || []) === JSON.stringify(row.tags || []) &&
     (stored.thumbnail_url || null) === row.thumbnail_url
-  if (!fieldsSame) return false
 
   // Compare media by the set of storage paths (order-independent).
   const submittedPaths = [
@@ -773,7 +860,46 @@ async function isNoOpEdit(
     .map(a => a.storage_path)
     .filter(Boolean)
     .sort()
-  return JSON.stringify(submittedPaths) === JSON.stringify(storedPaths)
+  const mediaSame = JSON.stringify(submittedPaths) === JSON.stringify(storedPaths)
+  return {
+    noop: fieldsSame && mediaSame,
+    content: contentChanged(stored, row, storedPaths as string[], submittedPaths as string[]),
+  }
+}
+
+// GET-486 B2: a content edit needs a valid rules confirmation (already validated early in the
+// handler when present). null = go on.
+function editRulesRefusal(rules: RulesState | null, content: boolean) {
+  if (!content || !rules?.version || rules.confirmation) return null
+  return json(409, { error: 'rules_confirmation_required', current_version: rules.version })
+}
+
+// GET-486 B2: record the confirmation of a persisted content edit at its new content_rev. The
+// edit is already saved, so a failure here is logged (and alerts) but doesn't fail the save —
+// the ticks were validated before anything was written.
+async function recordEditConfirmation(
+  svc: Svc,
+  args: { stored: OwnedInsyt; authUserId: string; rules: RulesState | null; newRev: number | null; log: GiLogger },
+) {
+  const { rules } = args
+  if (!rules?.version || !rules.confirmation || args.newRev === null) return
+  const refused = await recordRulesConfirmation(svc, rules.version, {
+    authUserId: args.authUserId,
+    correlationId: null,
+    rowId: args.stored.id,
+    confirmation: rules.confirmation,
+    context: 'update_published',
+    contentRev: args.newRev,
+    ip: rules.meta.ip,
+    userAgent: rules.meta.userAgent,
+  })
+  if (refused) {
+    args.log.error('rules confirmation not recorded after a content edit', {
+      insyt: args.stored.insyt_id,
+      status: refused.status,
+      error: refused.body.error,
+    })
+  }
 }
 
 // Build the n8n create-insyt webhook body. Shared by `submit` (create) and the
@@ -833,12 +959,19 @@ async function persistEditAndRepublish(
     payload: Payload
     row: ReturnType<typeof buildPublishedRow>
     log: GiLogger
+    // GET-486 B2: a content edit bumps insyts.content_rev
+    contentChanged: boolean
   },
-): Promise<{ error: string; status: number } | null> {
+): Promise<{ error: string; status: number } | { newRev: number | null }> {
   const { stored, payload, row } = args
+  const newRev = args.contentChanged ? Number(stored.content_rev || 0) + 1 : null
   const { error: upErr } = await svc
     .from('insyts')
-    .update({ ...row, updated_at: new Date().toISOString() })
+    .update({
+      ...row,
+      ...(newRev !== null ? { content_rev: newRev } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', stored.id)
   if (upErr) return { error: upErr.message, status: 500 }
 
@@ -898,7 +1031,7 @@ async function persistEditAndRepublish(
       args.log.warn('edit republish: n8n unreachable', { err: (err as Error).message })
     }
   }
-  return null
+  return { newRev }
 }
 
 // ─── update_published (GET-71) ───────────────────────────────────────────────
@@ -915,6 +1048,7 @@ async function updatePublished(
     tags: string[]
     userRow: { webflow_creator_id?: string | null } | null
     log: GiLogger
+    rules: RulesState | null
   },
 ) {
   const insytId = String(args.payload.insyt_id || '').trim()
@@ -922,17 +1056,21 @@ async function updatePublished(
   if ('error' in gate) return json(gate.status, { error: gate.error })
 
   const row = editRow(gate, args.payload, args.tags)
-  if (await isNoOpEdit(svc, gate, row, args.payload)) {
+  const diff = await diffEdit(svc, gate, row, args.payload)
+  if (diff.noop) {
     return json(200, { noop: true })
   }
+  const rulesRefused = editRulesRefusal(args.rules, diff.content)
+  if (rulesRefused) return rulesRefused
 
   const n = await buyerCount(svc, insytId)
   if (n >= 1) {
     // Don't write yet — the client shows the confirm modal and re-sends on confirm.
+    // GET-486 B2: nothing is recorded either; confirm_update records when it persists.
     return json(200, { purchased: true, buyer_count: n })
   }
 
-  const persistErr = await persistEditAndRepublish(svc, {
+  const persisted = await persistEditAndRepublish(svc, {
     stored: gate,
     authUserId: args.authUserId,
     creatorEmail: args.creatorEmail,
@@ -941,8 +1079,16 @@ async function updatePublished(
     payload: args.payload,
     row,
     log: args.log,
+    contentChanged: diff.content,
   })
-  if (persistErr) return json(persistErr.status, { error: persistErr.error })
+  if ('error' in persisted) return json(persisted.status, { error: persisted.error })
+  await recordEditConfirmation(svc, {
+    stored: gate,
+    authUserId: args.authUserId,
+    rules: args.rules,
+    newRev: persisted.newRev,
+    log: args.log,
+  })
   return json(200, { purchased: false })
 }
 
@@ -960,6 +1106,7 @@ async function confirmUpdate(
     tags: string[]
     userRow: { webflow_creator_id?: string | null; display_name?: string | null } | null
     log: GiLogger
+    rules: RulesState | null
   },
 ) {
   const insytId = String(args.payload.insyt_id || '').trim()
@@ -967,11 +1114,14 @@ async function confirmUpdate(
   if ('error' in gate) return json(gate.status, { error: gate.error })
 
   const row = editRow(gate, args.payload, args.tags)
-  if (await isNoOpEdit(svc, gate, row, args.payload)) {
+  const diff = await diffEdit(svc, gate, row, args.payload)
+  if (diff.noop) {
     return json(200, { noop: true })
   }
+  const rulesRefused = editRulesRefusal(args.rules, diff.content)
+  if (rulesRefused) return rulesRefused
 
-  const persistErr = await persistEditAndRepublish(svc, {
+  const persisted = await persistEditAndRepublish(svc, {
     stored: gate,
     authUserId: args.authUserId,
     creatorEmail: args.creatorEmail,
@@ -980,8 +1130,16 @@ async function confirmUpdate(
     payload: args.payload,
     row,
     log: args.log,
+    contentChanged: diff.content,
   })
-  if (persistErr) return json(persistErr.status, { error: persistErr.error })
+  if ('error' in persisted) return json(persisted.status, { error: persisted.error })
+  await recordEditConfirmation(svc, {
+    stored: gate,
+    authUserId: args.authUserId,
+    rules: args.rules,
+    newRev: persisted.newRev,
+    log: args.log,
+  })
 
   const buyers = await distinctBuyers(svc, insytId)
   const message = String(args.payload.message || '').trim() || null

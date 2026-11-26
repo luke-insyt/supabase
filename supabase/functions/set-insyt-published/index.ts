@@ -1,4 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { requestMeta, SERVER_SECRET_HEADER } from '../_shared/request-meta.ts'
+import { currentRulesVersion, recordRulesConfirmation } from '../submit-create-insyt/rules.ts'
+import { mayNeedRules, unhideDecision } from './logic.ts'
 
 // Creator-facing: publish / unpublish ("disable") one of the caller's own insyts by
 // toggling insyts.is_hidden. Unpublished (is_hidden=true) insyts drop out of the feed,
@@ -11,11 +14,18 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 // client-sent identity. Mirrors the disable-subscription function's auth shape.
 //
 // Body: { insyt_id: string, hidden: boolean }   // hidden=true → unpublished
+//       + GET-486 B2: rules_confirmation?: { version, ticks } and, from the RN server with a
+//         valid x-gi-server-secret, ip / user_agent (see _shared/request-meta.ts)
 // See webflow-app-documentation/features/disable-insyt/feature.md §6.
+//
+// GET-486 B2 (AC3.5): publishing a hidden Insyt back needs the five Content & Image Rules ticks
+// when its content changed since the owner's last confirmation or the rules version changed
+// (logic.ts). 409 rules_confirmation_required otherwise; with valid ticks an `unhide`
+// confirmation is recorded before the flag flips. No current content_rules → no gate.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Headers': `authorization, apikey, content-type, x-client-info, ${SERVER_SECRET_HEADER}`,
 }
 
 const json = (status: number, body: unknown) =>
@@ -70,7 +80,7 @@ Deno.serve(async (req) => {
     // Load the target insyt and verify the caller owns it (creator_email match).
     const { data: insyt, error: insytError } = await serviceClient
       .from('insyts')
-      .select('insyt_id, creator_email, is_hidden, visibility')
+      .select('id, insyt_id, creator_email, is_hidden, visibility, content_rev')
       .eq('insyt_id', insytId)
       .maybeSingle()
     if (insytError) return json(500, { error: 'Failed to load insyt', details: insytError.message })
@@ -86,6 +96,40 @@ Deno.serve(async (req) => {
     // relays here).
     if (hidden && insyt.visibility === 'private') {
       return json(409, { error: 'An insyt delivered for an inquiry can’t be unlisted while it’s private.' })
+    }
+
+    // GET-486 B2: the rules gate on unhide (logic.ts).
+    const rules = await currentRulesVersion(serviceClient)
+    if (rules.error) return json(500, { error: 'rules_check_failed' })
+    let needed = false
+    if (mayNeedRules(hidden, !!insyt.is_hidden, rules.version)) {
+      const { data: need, error: needErr } = await serviceClient.rpc('rules_confirmation_needed', {
+        p_row_id: insyt.id,
+      })
+      if (needErr) return json(500, { error: 'rules_check_failed' })
+      needed = need === true
+    }
+    const decision = unhideDecision({
+      hidden,
+      wasHidden: !!insyt.is_hidden,
+      current: rules.version,
+      needed,
+      raw: payload.rules_confirmation,
+    })
+    if (decision.kind === 'refuse') return json(decision.status, decision.body)
+    if (decision.kind === 'record') {
+      const meta = requestMeta(req.headers, payload, Deno.env.get('GI_SERVER_SECRET'))
+      const refused = await recordRulesConfirmation(serviceClient, rules.version!, {
+        authUserId: String(claims.sub),
+        correlationId: null,
+        rowId: String(insyt.id),
+        confirmation: decision.confirmation,
+        context: 'unhide',
+        contentRev: Number(insyt.content_rev || 0),
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+      })
+      if (refused) return json(refused.status, refused.body)
     }
 
     const { error: updError } = await serviceClient

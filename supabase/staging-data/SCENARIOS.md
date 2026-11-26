@@ -37,7 +37,7 @@ links survive a reset, while their seed-owned ones get rewritten.
 | `public.insyt_status`    | CASCADEs from `insyts` delete.                                    |
 | `public.user_social_links` for anchors | UPSERT by `(user_id, platform)` — never deleted, only overwritten platform-by-platform |
 | `public.user_social_links` for non-anchors | CASCADEs from the auth.users drop.                    |
-| `public.agreement_acceptances` | scoped by user — non-anchors are dropped with the user; anchor's rows are UPSERTed by `(user_id, agreement_version_id)` |
+| `public.terms_acceptances` (`insyter_agreement`) | append-only ledger (GET-470), never deleted: a creator gets one `fixture` row for the current version only when they have none yet; a deleted non-anchor's rows are anonymised by the auth delete trigger |
 | Storage `creator-avatars` / `creator-covers` | path prefix matches a seeded user's `auth_user_id`    |
 | Storage `insyt-thumbnails` / `insyt-images` / `insyt-pdfs` | path prefix matches a `seed-insyt-` slug |
 | Webflow CMS Creators     | item lookup by `webflow_creator_id` stored on `public.users`; anchors PATCH, non-anchors DELETE+POST |
@@ -147,7 +147,7 @@ itself, not the end state):
 The seed re-creates these two **without** the flow's end-state side-effects
 on every run, so the UI test always starts from a known pre-flow state. The
 test itself is what mutates them — and any data it writes (a new
-`purchases` row, an `agreement_acceptances` row, `is_creator=true`) is
+`purchases` row, a `terms_acceptances` ledger row, `is_creator=true`) is
 allowed to survive until the next re-seed, when it's wiped clean.
 
 ## Test consumers (recreated each run)
@@ -228,7 +228,8 @@ predictable across runs.
 `agreement_versions` already has a seeded v1.0 row from
 `20260503211914_seed_initial_agreement_version.sql`. The seed script:
 
-- Inserts `agreement_acceptances` for every creator EXCEPT
+- Records the **current** `insyter_agreement` version in the `terms_acceptances` ledger
+  (context `fixture`, skipped when the user already has that row) for every creator EXCEPT
   `seed-creator-terms-pending` so their `cp-terms-banner` shows.
 - Mirrors `users.creator_terms_accepted_at` to match.
 
@@ -450,7 +451,7 @@ supabase/supabase/staging-data/
 │   ├── 01_truncate_seed.sql   delete rows scoped to seed test users
 │   ├── 02_users.sql           upsert public.users for anchors + recreate the rest
 │   ├── 03_socials.sql         user_social_links
-│   ├── 04_agreements.sql      agreement_acceptances
+│   ├── 04_agreements.sql      terms_acceptances (insyter_agreement)
 │   ├── 05_insyts.sql          insyts rows (and tags, body, etc.)
 │   ├── 06_attachments.sql     insyt_attachments
 │   ├── 07_purchases.sql       purchases
@@ -538,7 +539,7 @@ personas:
 
 | Test                                | Starts from                                  | Asserts                                                                                          |
 | ----------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Become Insyter flow                 | `seed-non-creator-promotable@getinsyts.test` | After form submit: `is_creator=true`, agreement row in `agreement_acceptances`, `/account` now hides the basic edit form and shows the creator-profile link. |
+| Become Insyter flow                 | `seed-non-creator-promotable@getinsyts.test` | After form submit: `is_creator=true`, `insyter_agreement` row in `terms_acceptances`, `/account` now hides the basic edit form and shows the creator-profile link. |
 | Stripe checkout end-to-end          | `seed-consumer-checkout@getinsyts.test`     | After test-card checkout: row appears in `purchases` with `payment_status='paid'`, PDF download is unlocked on insyt detail, `/my-insyts` lists the new purchase. |
 | Edit Profile modal happy path       | anchor creator (already a creator)           | Save updates `users` row + writes to Webflow CMS via sync (verify by re-fetching the Creator item via Webflow API). |
 

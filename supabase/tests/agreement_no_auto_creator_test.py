@@ -89,8 +89,7 @@ finally:
     print("TEARDOWN")
     if uid:
         # GET-470: the terms_acceptances ledger row can't be deleted (append-only); deleting the
-        # auth user anonymises it (and the legacy row) via on_auth_user_deleted_anonymise_terms.
-        call("DELETE", f"/rest/v1/agreement_acceptances?auth_user_id=eq.{uid}")
+        # auth user anonymises it via on_auth_user_deleted_anonymise_terms.
         call("DELETE", "/auth/v1/admin/users/" + uid)
     print(f"\nRESULT: {len(ok)} passed, {len(fail)} failed")
     if fail:

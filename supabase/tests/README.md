@@ -137,7 +137,11 @@ per-type uniqueness + one current per type, registry immutability (incl. delete/
 grants, every RPC (sha copy, `terms_changed`, `ref_once`, null-current), append-only ledger +
 anonymise path, user deletion anonymising legacy + ledger rows, purchase stamps in both insert
 orders (GET-332 anonymity still green), `purchases_rn_session_once`, notices per type,
-`submit_inquiry_proposal` (D-8) and the legacy backfill. 22 tests, ~7 s.
+`submit_inquiry_proposal` (D-8) and the legacy backfill. Since GET-486 A1 it also applies
+`20261126120000_get470_drop_legacy_acceptances.sql` (every current-state test runs on the
+ledger-only schema) and checks the drop's guard (unmatched legacy row → raises, nothing dropped),
+the anonymising of pre-GET-470 orphan twins, the tokenised ↔ anonymised pair passing, and that
+`prod-ops/get486-legacy-precheck.sql` agrees with the guard. 27 tests, ~9 s.
 
 ```bash
 DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A supabase/tests/get470_legal_registry_test.ts

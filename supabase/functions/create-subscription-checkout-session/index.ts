@@ -1,5 +1,18 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
+import { applyBuyerToSession, attachVatIdToCustomer, checkVatId } from '../_shared/vat.ts'
+import { requestMeta, SERVER_SECRET_HEADER } from '../_shared/request-meta.ts'
+import {
+  applyLegalToForm,
+  applySubscriberMetadata,
+  consentMeta,
+  consentRefusal,
+  legalGateOn,
+  loadLegalState,
+  stripeConsentMessage,
+  termsLinkUrl,
+  type ConsentMeta,
+} from './logic.ts'
 
 // Start an embedded Stripe Checkout session in subscription mode, so the
 // signed-in user can subscribe to a creator. Mirrors create-checkout-session
@@ -7,7 +20,11 @@ import { withLogging } from '../_shared/log.ts'
 // Stripe-webhook workflow reads metadata.creator_id / metadata.subscriber_id
 // to upsert public.creator_subscriptions on checkout.session.completed.
 //
-// Body: { creator_id }  — the creator's auth uid (users.auth_user_id).
+// Body: { creator_id, vat_id?, consent?, consent_at?, ip?, user_agent? }  — the creator's auth
+// uid (users.auth_user_id); vat_id = optional EU VAT ID, VIES-checked before the session is
+// created (GET-458). GET-470: consent = { terms_version, waiver_version, waiver_accepted }
+// (checked only while LEGAL_CHECKOUT_GATE=on); consent_at / ip / user_agent are trusted only
+// from the RN server with a valid x-gi-server-secret — see logic.ts.
 //
 // v1: NO Stripe Connect transfer/application fee — revenue is collected on the
 // platform account; payout routing lands with the separate payouts feature.
@@ -15,7 +32,7 @@ import { withLogging } from '../_shared/log.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Headers': `authorization, apikey, content-type, x-client-info, ${SERVER_SECRET_HEADER}`,
 }
 
 const json = (status: number, body: unknown) =>
@@ -48,7 +65,8 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) return json(401, { error: 'Missing Authorization header' })
 
-    const { creator_id } = await req.json().catch(() => ({}))
+    const body = await req.json().catch(() => ({}))
+    const { creator_id, vat_id } = body ?? {}
     if (!creator_id) return json(400, { error: 'Missing creator_id' })
 
     const userClient = createClient(
@@ -93,8 +111,54 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
       return json(409, { error: 'You already have an active subscription to this creator' })
     }
 
+    // GET-470: the legal checkout gate, BEFORE any Stripe call. The edge fn re-checks
+    // independently of the RN server because any user JWT can call it directly.
+    let legal: { meta: ConsentMeta; message: string | null } | null = null
+    if (legalGateOn(Deno.env.get('LEGAL_CHECKOUT_GATE'))) {
+      const { state, error: legalError } = await loadLegalState(serviceClient, user.id)
+      if (legalError || !state) {
+        log.error('legal state read failed', { err: legalError })
+        return json(500, { error: 'Failed to read terms status', reqId: log.reqId })
+      }
+      const refusal = consentRefusal(state.status, body?.consent)
+      if (refusal) {
+        log.info('checkout consent refused', { error: refusal.body.error })
+        return json(refusal.status, refusal.body)
+      }
+      if (state.status.buyer_terms !== null || state.status.withdrawal_waiver !== null) {
+        const meta = consentMeta({
+          status: state.status,
+          meta: requestMeta(req.headers, body, Deno.env.get('GI_SERVER_SECRET')),
+          bodyConsentAt: body?.consent_at,
+          now: new Date(),
+        })
+        const message = state.status.buyer_terms !== null
+          ? stripeConsentMessage({
+            termsVersion: state.status.buyer_terms,
+            termsUrl: termsLinkUrl(Deno.env.get('APP_BASE_URL'), state.buyerTermsUrl),
+            waiverText: state.waiverText,
+          })
+          : null
+        legal = { meta, message }
+      }
+    }
+
     const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
     if (!stripeKey) return json(500, { error: 'STRIPE_SECRET_KEY not configured' })
+
+    // GET-458: optional EU VAT ID, checked against VIES BEFORE any payment. Invalid →
+    // error (no session); valid or VIES unreachable → attached to the Stripe customer
+    // so Stripe Tax reverse-charges it (see _shared/vat.ts).
+    let vatCustomerId: string | null = null
+    if (typeof vat_id === 'string' && vat_id.trim()) {
+      const vat = await checkVatId(vat_id)
+      if (!vat.ok) {
+        log.info('vat id rejected', { code: vat.code })
+        return json(422, { error: vat.message, code: vat.code })
+      }
+      log.info('vat id accepted', { status: vat.status })
+      vatCustomerId = await attachVatIdToCustomer(stripeKey, user.email, vat.vatId)
+    }
 
     // GET-124: the embedded payment window shows the Stripe *product* name. The
     // subscription product is created once (set-subscription-price) with the
@@ -130,7 +194,7 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     form.set('mode', 'subscription')
     form.set('line_items[0][price]', creator.stripe_subscription_price_id)
     form.set('line_items[0][quantity]', '1')
-    form.set('customer_email', user.email)
+    applyBuyerToSession(form, user.email, vatCustomerId)
     // Metadata on BOTH the session (webhook checkout.session.completed) and the
     // subscription object (customer.subscription.* events) so n8n always has the
     // pair without a lookup.
@@ -138,8 +202,16 @@ Deno.serve(withLogging('create-subscription-checkout-session', corsHeaders, asyn
     form.set('metadata[subscriber_id]', user.id)
     form.set('subscription_data[metadata][creator_id]', creator_id)
     form.set('subscription_data[metadata][subscriber_id]', user.id)
+    // GET-470: the key all three checkout creators share for the RN webhook (always set).
+    applySubscriberMetadata(form, user.id)
+    // GET-470: Stripe's required Terms checkbox + waiver text + consent evidence (flag on only).
+    if (legal) applyLegalToForm(form, legal.meta, legal.message)
     // Stripe Tax (decision #8): calculate/collect VAT per the subscriber.
     form.set('automatic_tax[enabled]', 'true')
+    // GET-458: full billing address for OSS. (No invoice_creation: subscription mode
+    // always invoices.) Stripe's own VAT ID field stays OFF — the VAT ID comes
+    // pre-checked from our UI (vat_id above).
+    form.set('billing_address_collection', 'required')
     // Show Stripe's native "Add promotion code" field in the embedded checkout.
     // Codes resolve against coupons created in the Stripe dashboard (e.g. a
     // forever 100%-off coupon for prod smoke-testing — Tax is computed on the

@@ -4,7 +4,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { withLogging } from '../_shared/log.ts'
 import type { GiLogger } from '../_shared/log.ts'
-import { loadOwnProposal, priceRefusal, privateEditFields, publishPrivate, type InquiryProposal } from './inquiry.ts'
+import { inquiryPrice, isPriceLocked, loadOwnProposal, privateEditFields, publishPrivate, skipsWebflowResync, type InquiryProposal } from './inquiry.ts'
+import { agreementRefusal, needsAgreementCheck } from './agreement.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -97,7 +98,7 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
 
   const { data: userRow } = await svc
     .from('users')
-    .select('is_creator, display_name, bio, webflow_creator_id')
+    .select('is_creator, display_name, bio, webflow_creator_id, agreement_version')
     .eq('auth_user_id', authUserId)
     .maybeSingle()
   if (!userRow?.is_creator) return json(403, { error: 'Not an active creator' })
@@ -110,6 +111,13 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
   }
 
   const action = payload.action || 'submit'
+
+  // GET-357: a new publish needs the current Creator Agreement (see agreement.ts).
+  // Before tag resolution, so a refused submit writes nothing.
+  if (needsAgreementCheck(action, payload)) {
+    const refusal = await agreementRefusal(svc, userRow.agreement_version, log)
+    if (refusal) return json(refusal.status, refusal.body)
+  }
 
   if (action === 'load_draft') {
     const pid = String(payload.inquiry_proposal_id || '').trim()
@@ -191,15 +199,16 @@ Deno.serve(withLogging('submit-create-insyt', corsHeaders, async (req, log) => {
 
   // ── Inquiry deliveries (GET-328) ─────────────────────────────────────────
   // Every create/edit action on an inquiry draft or insyt passes this gate:
-  // the proposal must be the caller's, the price is the proposal's (S5-AC4),
+  // the proposal must be the caller's, the price is the proposal's (S5-AC4) —
+  // or €0 for good once an open-mode insyt is released (GET-459 §5, S5-AC5) —
   // and a private insyt never reaches n8n (see inquiry.ts).
   const inquiry = await resolveInquiry(svc, action, payload, authUserId)
   if (inquiry && 'error' in inquiry) return json(inquiry.status, { error: inquiry.error })
   if (inquiry) {
-    const refusal = priceRefusal(inquiry.price_cents, payload)
-    if (refusal) return json(400, { error: refusal })
-    payload.price_cents = inquiry.price_cents
-    payload.is_free = false
+    const price = inquiryPrice(inquiry, payload)
+    if (!price.ok) return json(price.status, price.body)
+    payload.price_cents = price.price_cents
+    payload.is_free = price.is_free
     payload.inquiry_proposal_id = inquiry.id
   }
 
@@ -398,14 +407,17 @@ async function resolveInquiry(
   const isEdit = action === 'update_published' || action === 'confirm_update'
   const ref = String(payload.insyt_id || '').trim()
   let rowPid: string | null = null
+  let priceLocked = false
   if (ref && (isEdit || uuidRe.test(ref))) {
     const { data, error } = await svc
       .from('insyts')
-      .select('inquiry_proposal_id')
+      .select('inquiry_proposal_id, released_at, release_price_cents')
       .eq(isEdit ? 'insyt_id' : 'id', ref)
       .maybeSingle()
     if (error) return { error: error.message, status: 500 }
     rowPid = (data?.inquiry_proposal_id as string | null) ?? null
+    // GET-459 §5: read from the stored row, never the payload, so a client can't unlock it.
+    priceLocked = isPriceLocked(data as { released_at: string | null; release_price_cents: number | null } | null)
   }
   const asked = String(payload.inquiry_proposal_id || '').trim() || null
   if (asked && !uuidRe.test(asked)) return { error: 'inquiry_proposal_id must be a UUID', status: 400 }
@@ -413,7 +425,9 @@ async function resolveInquiry(
   if (asked && !rowPid && isEdit) return { error: 'This insyt isn’t an inquiry delivery', status: 400 }
   const pid = rowPid || asked
   if (!pid) return null
-  return await loadOwnProposal(svc, pid, authUserId)
+  const proposal = await loadOwnProposal(svc, pid, authUserId)
+  if ('error' in proposal) return proposal
+  return { ...proposal, price_locked: priceLocked }
 }
 
 // Resume the draft of one proposal (the RN create screen opened from it).
@@ -631,6 +645,8 @@ type OwnedInsyt = {
   tags: string[] | null
   thumbnail_url: string | null
   visibility: string | null
+  // GET-459: set on an inquiry delivery — its edits never re-sync to Webflow
+  inquiry_proposal_id: string | null
 }
 
 type OwnerGate = OwnedInsyt | { error: string; status: number }
@@ -648,7 +664,7 @@ async function assertOwner(
   const { data, error } = await svc
     .from('insyts')
     .select(
-      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility',
+      'id, insyt_id, creator_email, creator_auth_user_id, status, title, abstract, content_type, sport, body_html, price_eur, tags, thumbnail_url, visibility, inquiry_proposal_id',
     )
     .eq('insyt_id', insytId)
     .maybeSingle()
@@ -710,12 +726,13 @@ function buildPublishedRow(payload: Payload, tags: string[]) {
   }
 }
 
-// GET-328: a private insyt skips the n8n is_edit re-sync, which is what
-// rewrites the public thumbnail URL and the read time on a public edit — so
-// set them here (else the cover becomes a bare storage path).
+// GET-328 / GET-459: an inquiry insyt (private or released) skips the n8n
+// is_edit re-sync, which is what rewrites the public thumbnail URL and the read
+// time on a public edit — so set them here (else the cover becomes a bare
+// storage path).
 function editRow(stored: OwnedInsyt, payload: Payload, tags: string[]) {
   const row = buildPublishedRow(payload, tags)
-  return stored.visibility === 'private' ? { ...row, ...privateEditFields(payload) } : row
+  return skipsWebflowResync(stored) ? { ...row, ...privateEditFields(payload) } : row
 }
 
 // No-op guard (D-5): true when the submitted editable fields + media are
@@ -851,9 +868,10 @@ async function persistEditAndRepublish(
   // Re-run publish (fire the n8n create-insyt webhook with is_edit:true). The
   // row is already saved (source of truth, D-2); a re-sync failure is logged
   // and surfaced as a non-blocking warning rather than losing the edit.
-  // A private insyt (GET-328) has no CMS item or payment link to re-sync, and
-  // the pipeline would create both — the saved row is the whole edit.
-  if (N8N_CREATE_INSYT_URL && stored.visibility !== 'private') {
+  // An inquiry insyt (GET-328 private; GET-459 released too) has no CMS item or
+  // payment link to re-sync, and the pipeline would create both — the saved row
+  // is the whole edit.
+  if (N8N_CREATE_INSYT_URL && !skipsWebflowResync(stored)) {
     const forwardBody = buildCreateForwardBody({
       authUserId: args.authUserId,
       creatorEmail: args.creatorEmail,

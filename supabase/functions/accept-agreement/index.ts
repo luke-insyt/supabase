@@ -1,8 +1,12 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { requestMeta, SERVER_SECRET_HEADER } from '../_shared/request-meta.ts'
+import { currentInsyterVersion, recordInsyterAcceptance, STALE_VERSION_BODY } from './logic.ts'
 
+// GET-470: x-gi-server-secret is sent by the RN server (data/me.ts acceptAgreement) together
+// with the user's real ip / user_agent in the body — see _shared/request-meta.ts.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Headers': `authorization, apikey, content-type, x-client-info, ${SERVER_SECRET_HEADER}`,
 }
 
 const json = (status: number, body: unknown) =>
@@ -37,27 +41,25 @@ Deno.serve(async (req) => {
     const email = authResult.user.email
     if (!email) return json(401, { error: 'Missing email in token' })
 
-    // Signature details still come from the body; identity does NOT.
+    // Signature details still come from the body; identity does NOT. ip / user_agent only
+    // count when the RN server vouches for them with the shared secret (GET-470 §3.1).
     const body = await req.json().catch(() => ({}))
-    const signature_name = body?.signature_name
+    const signature_name = typeof body?.signature_name === 'string' ? body.signature_name.trim() : ''
     const version = body?.version
-    const ip = body?.ip
     if (!signature_name || !version) {
       return json(400, { error: 'Missing required fields' })
     }
+    const meta = requestMeta(req.headers, body, Deno.env.get('GI_SERVER_SECRET'))
 
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SB_SERVICE_SECRET')!)
 
-    // You may only sign the CURRENT agreement — reject a stale/forged version so the
-    // acceptance record can't be pinned to arbitrary terms.
-    const { data: currentVersion, error: versionError } = await supabase
-      .from('agreement_versions')
-      .select('version')
-      .eq('is_current', true)
-      .maybeSingle()
-    if (versionError) return json(500, { error: versionError.message })
-    if (!currentVersion || currentVersion.version !== version) {
-      return json(409, { error: 'Not the current agreement version' })
+    // You may only sign the CURRENT Insyter Agreement — reject a stale/forged version so the
+    // acceptance record can't be pinned to arbitrary terms. (record_insyter_acceptance
+    // re-checks it inside the write transaction.)
+    const current = await currentInsyterVersion(supabase)
+    if (current.error) return json(500, { error: current.error })
+    if (!current.version || current.version !== version) {
+      return json(409, { ...STALE_VERSION_BODY })
     }
 
     const { data: userRow, error: userLookupError } = await supabase
@@ -73,20 +75,18 @@ Deno.serve(async (req) => {
       return json(404, { error: 'User not found' })
     }
 
-    const acceptedAt = new Date().toISOString()
-
-    const { error: acceptanceError } = await supabase.from('agreement_acceptances').insert({
-      auth_user_id: authUserId,
+    // GET-470: the legacy agreement_acceptances row and the terms_acceptances ledger row,
+    // atomically (dual write until P7).
+    const recorded = await recordInsyterAcceptance(supabase, {
+      authUserId,
       email,
-      signature_name,
+      signatureName: signature_name,
       version,
-      ip: ip ?? null,
-      accepted_at: acceptedAt,
+      meta,
     })
+    if (!recorded.ok) return json(recorded.status, recorded.body)
 
-    if (acceptanceError) {
-      return json(500, { error: acceptanceError.message })
-    }
+    const acceptedAt = new Date().toISOString()
 
     // GET-99: accepting the agreement records the signed terms but does NOT make
     // the user a creator. `is_creator` is flipped only once the profile is completed
@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
       .update({
         agreement_version: version,
         signature_name,
-        signature_ip: ip ?? null,
+        signature_ip: meta.ip,
         signed_at: acceptedAt,
         creator_terms_accepted_at: acceptedAt,
       })
@@ -110,7 +110,7 @@ Deno.serve(async (req) => {
     }
 
     return json(200, { success: true })
-  } catch (err) {
+  } catch (_err) {
     return json(500, { error: 'Internal server error' })
   }
 })

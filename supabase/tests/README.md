@@ -85,3 +85,74 @@ DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A \
 ```
 Re-run after any migration touching `insyts`, `users`, storage or `insyt_search`, and before
 a release. 3 tests; green on staging 2026-10-18.
+
+## inquiry_email_invites_test.ts + inquiry_email_invites_live_test.ts — GET-373 email invites
+
+**Offline (PGlite, no network/secrets):** runs `20261120090000_get373_inquiry_email_invites.sql`
+on a stand-in (with Supabase's default privileges, so the server-only revokes are really tested)
+and asserts the add/claim RPC refusals, the redefined `inquiry_targets_cap` trigger, the rolling
+24 h cap, the account-deletion cascade and the grants. 18 tests.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 deno test -A supabase/tests/inquiry_email_invites_test.ts
+```
+
+**Live (staging only, after the migration is applied):** PGlite is a single connection, so the
+row-lock / advisory-lock serialisation is proven here with real parallel RPC calls — two adds
+racing at a total of 8 (exactly one wins) and three adds racing the 20/24 h cap (exactly two win).
+Skipped unless `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set; refuses the prod ref;
+self-cleaning (`get373-*@getinsyts.test` throwaways).
+
+```bash
+deno test -A --env-file=<path to getinsyts-native/server/.env> supabase/tests/inquiry_email_invites_live_test.ts
+```
+
+## get459_open_mode_test.ts — GET-459 "Open for everyone" migration
+
+**Offline (PGlite, no network/secrets):** runs `20261121120000_get459_open_mode.sql` on a stand-in
+with pre-existing rows and asserts the `access_mode` backfill (drafts too, `updated_at` untouched),
+the `released_at` backfill (public inquiry insyts only, GET-73's `updated_at` untouched), every
+branch of the `inquiries_access_mode_sync` trigger, the two checks, `release_inquiry_insyt`
+(€0 for open, Insyter's price for timed, second call → no row, unpublished / public / non-inquiry
+rows skipped), the service_role-only EXECUTE grant, the partial index, and that the file is
+idempotent. 12 tests.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 deno test -A supabase/tests/get459_open_mode_test.ts
+```
+
+The edge-fn side (mode-aware `privateUntil`, `release_price_cents`, the released-open price lock)
+is unit-tested in `supabase/functions/submit-create-insyt/inquiry_test.ts`:
+
+```bash
+DENO_NO_PACKAGE_JSON=1 deno test --allow-env supabase/functions/submit-create-insyt/
+```
+
+## GET-470 — legal registry + acceptance ledger
+
+**Offline (PGlite, no network/secrets):** `get470_legal_registry_test.ts` runs the three GET-470
+migrations (`20261125120000` P0, `20261125121000` migration A, `20261125122000` migration B) on a
+stand-in built from the real GET-330 / GET-357 / GET-332 §1 migrations and asserts the v1.1 guard,
+per-type uniqueness + one current per type, registry immutability (incl. delete/truncate), API
+grants, every RPC (sha copy, `terms_changed`, `ref_once`, null-current), append-only ledger +
+anonymise path, user deletion anonymising legacy + ledger rows, purchase stamps in both insert
+orders (GET-332 anonymity still green), `purchases_rn_session_once`, notices per type,
+`submit_inquiry_proposal` (D-8) and the legacy backfill. 22 tests, ~7 s.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A supabase/tests/get470_legal_registry_test.ts
+```
+
+**Live on staging (PostgREST, after migration B is applied):** `legal_registry_test.py`
+(read-mostly: shape, pinned v1.0 hash = served bytes, grants, 42501 on every RPC) and
+`legal_ledger_test.py` (writes PERMANENT ledger rows for throwaway users, deleted — i.e.
+anonymised — in teardown). Both refuse the prod ref.
+
+```bash
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/legal_registry_test.py
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/legal_ledger_test.py
+```
+
+**psql:** `sql/legal_v11_guard.sql` (read-only; safe on prod for the P0 dry-run) and
+`sql/legal_destructive.sql` (Supabase branch / local DB only — refuses the staging and prod hosts;
+rolled back at the end).

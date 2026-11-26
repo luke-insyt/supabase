@@ -190,3 +190,14 @@ SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/lega
 
 `sql/legal_destructive.sql` gained a B3 block (delete/truncate/update refused, user delete keeps
 the row); it skips until the table exists on the branch.
+
+## GET-486 B4 — insyt_reports (Report an Insyt)
+
+- `get486_insyt_reports_test.ts` — offline (PGlite): check constraints, the two open-duplicate
+  indexes, no client grants, and the D-9 order-proof deletion trigger with and without B2's
+  `insyt_rules_confirmations` (reporter delete keeps the note, nulls id/email/IP, sets
+  `reporter_deleted_at`).
+  `DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A supabase/tests/get486_insyt_reports_test.ts`
+- `legal_reports_test.py` — live on staging after the migration merges (open-duplicate indexes,
+  constraints, anon/authenticated locked out). Throwaway `get486-reporter-*@getinsyts.test` user.
+- `sql/legal_destructive.sql` — the AC4.10 block (branch/local DB only).

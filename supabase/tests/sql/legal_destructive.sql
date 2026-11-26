@@ -169,4 +169,35 @@ begin
 end;
 $$;
 
+-- GET-486 B4 (AC4.10, D-9): deleting a reporter keeps the report with the deleted-user marker.
+-- Runs whether or not B2's insyt_rules_confirmations exists (the follow-up trigger guards each
+-- table with to_regclass); skips with a notice before the B4 migration is on this DB.
+do $$
+declare
+  rep  uuid := gen_random_uuid();
+  r    record;
+begin
+  if to_regclass('public.insyt_reports') is null then
+    raise notice 'SKIP (AC4.10): public.insyt_reports not on this DB yet';
+    return;
+  end if;
+  insert into auth.users (id, email, aud, role)
+  values (rep, 'get486-reporter-destructive@getinsyts.test', 'authenticated', 'authenticated');
+  insert into public.insyt_reports (insyt_id, reporter_auth_user_id, reporter_email, reporter_ip, reason, note)
+  values ('get486-destructive', rep, 'get486-reporter-destructive@getinsyts.test', '203.0.113.9', 'copied', 'the notice');
+
+  delete from auth.users where id = rep;
+
+  select * into r from public.insyt_reports where insyt_id = 'get486-destructive';
+  if not found then raise exception 'FAIL (AC4.10): the deleted reporter''s report vanished (must be kept)'; end if;
+  if r.reporter_auth_user_id is not null or r.reporter_email is not null or r.reporter_ip is not null
+     or r.reporter_deleted_at is null then
+    raise exception 'FAIL (AC4.10): report % not marked as from a deleted user', r.id;
+  end if;
+  if r.note is distinct from 'the notice' then raise exception 'FAIL (AC4.10): the note was not kept'; end if;
+  raise notice 'PASS (AC4.10, D-9): reporter delete succeeded (confirmations table present: %), report kept with marker',
+    to_regclass('public.insyt_rules_confirmations') is not null;
+end;
+$$;
+
 rollback;

@@ -201,3 +201,38 @@ the row); it skips until the table exists on the branch.
 - `legal_reports_test.py` — live on staging after the migration merges (open-duplicate indexes,
   constraints, anon/authenticated locked out). Throwaway `get486-reporter-*@getinsyts.test` user.
 - `sql/legal_destructive.sql` — the AC4.10 block (branch/local DB only).
+
+## GET-486 B2 — Content & Image Rules confirmations
+
+**Offline (PGlite, no network/secrets):** `get486_content_rules_test.ts` runs
+`20261126180000_get486_content_rules.sql` on the GET-470 legal schema (shared stand-in
+`_legal_pglite.ts`, also used by `get470_legal_registry_test.ts`) and asserts the `content_rules`
+registry type (immutability still holds), the append-only `insyt_rules_confirmations` + its one
+anonymise path, `record_rules_confirmation` (`rules_changed`, `rules_ticks_invalid`, `not_owner`,
+`rules_not_live`, legacy rows without `correlation_id`/`creator_auth_user_id`),
+`rules_confirmation_needed` (null-current, owner filter, `content_rev` and version moves),
+42501 for `authenticated` on every new RPC, and the D-9 deletion trigger with and without
+`insyt_reports`. 14 tests, ~4 s.
+
+```bash
+DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test -A supabase/tests/get486_content_rules_test.ts
+```
+
+Edge-fn side (`submit-create-insyt/rules.ts`, `set-insyt-published/logic.ts`):
+
+```bash
+DENO_NO_PACKAGE_JSON=1 npx -y deno@2.1.4 test --allow-env --allow-read \
+  supabase/functions/submit-create-insyt/ supabase/functions/set-insyt-published/
+```
+
+**Live on staging (PostgREST, after the merge applies the migration):** `legal_rules_test.py`
+adapts to whether `content_rules` is current (null-current checks before the make-current, the
+full record/needed/append-only/RLS/deletion checks after). Confirmation rows are permanent;
+the throwaway users are deleted (which anonymises them). Refuses the prod ref.
+
+```bash
+SUPABASE_SERVICE_ROLE_KEY=<staging service-role key> python3 supabase/tests/legal_rules_test.py
+```
+
+`sql/legal_destructive.sql` gained a B2 block (confirmations truncate/delete/update refused; user
+delete keeps + anonymises them; with `insyt_reports` present, the reporter too).

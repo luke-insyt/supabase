@@ -75,8 +75,7 @@ Deno.serve(async (req) => {
       return json(404, { error: 'User not found' })
     }
 
-    // GET-470: the legacy agreement_acceptances row and the terms_acceptances ledger row,
-    // atomically (dual write until P7).
+    // GET-470 / GET-486 A1: ledger only — one terms_acceptances row with the signature.
     const recorded = await recordInsyterAcceptance(supabase, {
       authUserId,
       email,

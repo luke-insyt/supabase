@@ -1,5 +1,5 @@
-// GET-470 — accept-agreement: type-filtered current version, atomic dual write via
-// record_insyter_acceptance, server-secret request meta.
+// GET-470 — accept-agreement: type-filtered current version, the ledger-only write via
+// record_insyter_acceptance (GET-486 A1), server-secret request meta.
 // Run: DENO_NO_PACKAGE_JSON=1 deno test supabase/functions/accept-agreement/
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts'
 import { requestMeta } from '../_shared/request-meta.ts'

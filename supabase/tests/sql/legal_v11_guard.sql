@@ -7,6 +7,8 @@
 -- Before 20261125120000_get470_drop_agreement_v1_1.sql is applied it answers "would the
 -- migration's guard pass here?" (it raises with the same counts the migration would). After it
 -- is applied it asserts v1.1 is gone and v1.0 is untouched.
+-- GET-486 A1 dropped the legacy acceptance table; v1.1 acceptances are counted in the
+-- terms_acceptances ledger (the only acceptance record), which holds every backfilled row.
 -- The migration itself (raise with a v1.1 acceptance; delete without) is exercised end-to-end
 -- offline in supabase/tests/get470_legal_registry_test.ts ("P0: …").
 
@@ -22,7 +24,8 @@ declare
   n_objects integer;
 begin
   select exists (select 1 from public.agreement_versions where version = 'v1.1') into has_v11;
-  select count(*) into n_accept  from public.agreement_acceptances where version = 'v1.1';
+  select count(*) into n_accept  from public.terms_acceptances
+   where document_type = 'insyter_agreement' and version = 'v1.1';
   select count(*) into n_users   from public.users where agreement_version = 'v1.1';
   select count(*) into n_current from public.agreement_versions where version = 'v1.1' and is_current;
 

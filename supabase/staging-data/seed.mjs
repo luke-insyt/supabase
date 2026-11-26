@@ -40,7 +40,6 @@ if (!STRIPE_SECRET_KEY.startsWith('sk_test_')) {
 const PRODUCTION_REF = 'krapqgxrqprtajatxjzd'
 const SEED_INSYT_PREFIX = 'seed-insyt-'
 const SEED_SESS_PREFIX  = 'seed-sess-'
-const AGREEMENT_VERSION = 'v1.0' // matches the row seeded by migration 20260503211914
 
 const FIXTURES_DIR = path.join(__dirname, 'fixtures')
 
@@ -267,29 +266,45 @@ async function replaceSocialLinks(idByEmail) {
   }
 }
 
+// GET-486 A1: the terms_acceptances ledger is the only acceptance record. It's append-only, so
+// no delete-then-insert: like getinsyts-native/server/scripts/legal-seed-fixtures.ts, record the
+// CURRENT insyter_agreement version (context 'fixture') only when the user has no ledger row for
+// it yet, which keeps a re-seed idempotent. record_insyter_acceptance isn't used: it would add a
+// 'reaccept' row on every run.
 async function replaceAgreements(idByEmail) {
-  console.log('\n── agreement_acceptances ──')
-  // Drop the seeded user's existing acceptances by user_id, then insert one.
+  console.log('\n── terms_acceptances (insyter_agreement) ──')
+  const cur = await sb(
+    '/rest/v1/agreement_versions?select=version&document_type=eq.insyter_agreement&is_current=eq.true'
+  )
+  const version = Array.isArray(cur) && cur[0] ? cur[0].version : null
+  if (!version) {
+    console.log('  • no current insyter_agreement — skipped')
+    return
+  }
   for (const u of allUsers()) {
     if (!u.profile.is_creator) continue
     if (u.profile.skip_terms) continue
     const authUserId = idByEmail.get(u.email)
-    await sb(`/rest/v1/agreement_acceptances?auth_user_id=eq.${authUserId}`, {
-      method: 'DELETE',
-      headers: { Prefer: 'return=minimal' },
-    })
-    await sb('/rest/v1/agreement_acceptances', {
+    const has = await sb(
+      `/rest/v1/terms_acceptances?select=id&auth_user_id=eq.${authUserId}` +
+        `&document_type=eq.insyter_agreement&version=eq.${encodeURIComponent(version)}&limit=1`
+    )
+    if (Array.isArray(has) && has.length) {
+      console.log(`  • ${u.email} already on ${version}`)
+      continue
+    }
+    await sb('/rest/v1/rpc/record_terms_acceptance', {
       method: 'POST',
-      headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({
-        auth_user_id: authUserId,
-        email: u.email,
-        signature_name: u.profile.display_name || u.email,
-        version: AGREEMENT_VERSION,
-        ip: '127.0.0.1',
+        p_user: authUserId,
+        p_email: u.email,
+        p_type: 'insyter_agreement',
+        p_version: version,
+        p_context: 'fixture',
+        p_require_current: false,
       }),
     })
-    console.log(`  • ${u.email} accepted ${AGREEMENT_VERSION}`)
+    console.log(`  • ${u.email} accepted ${version}`)
   }
 }
 

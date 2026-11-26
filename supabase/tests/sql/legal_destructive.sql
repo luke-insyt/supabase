@@ -4,7 +4,8 @@
 -- in one transaction that is rolled back at the end, but it still inserts registry rows,
 -- creates/deletes an auth user and exercises triggers — so it refuses the two live projects:
 --   psql "$BRANCH_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sql/legal_destructive.sql
--- Re-run after P7 (legacy table dropped): the user-delete block must still pass.
+-- GET-486 A1 (= GET-470 P7) dropped the legacy table; re-run after that migration (AC2.5): the
+-- user-delete block must still pass with the ledger as the only acceptance record.
 --
 -- The same cases run offline on PGlite in supabase/tests/get470_legal_registry_test.ts.
 
@@ -58,7 +59,7 @@ begin
   if not raised then raise exception 'FAIL (AC1.4): delete of insyter_agreement v1.0 did not raise'; end if;
   raise notice 'PASS (AC1.4): registry update/delete refused';
 
-  -- ledger rows (legacy + ledger for u, ledger for keep) ---------------------------
+  -- ledger rows (insyter acceptance for u, privacy for keep) ------------------------
   perform public.record_insyter_acceptance(u, null, 'Gone Tester', (select version from public.agreement_versions
                                             where document_type = 'insyter_agreement' and is_current), '203.0.113.1', 'UA');
   perform public.record_terms_acceptance(keep, null, 'privacy', 'vtest-destructive', 'fixture', null, null, '203.0.113.2', 'UA', false);
@@ -86,7 +87,7 @@ begin
   if not raised then raise exception 'FAIL (AC2.2): ledger version update did not raise'; end if;
   raise notice 'PASS (AC2.2): ledger truncate/delete/update refused';
 
-  -- AC8.1–8.3: deleting a user with legacy + ledger rows succeeds and anonymises both --
+  -- AC8.1–8.2, GET-486 AC2.5: deleting a user with ledger rows succeeds and anonymises them --
   delete from auth.users where id = u;
 
   for r in select * from public.terms_acceptances where auth_user_id = u loop
@@ -97,19 +98,10 @@ begin
   end loop;
   if not found then raise exception 'FAIL (AC8.2): ledger row of the deleted user vanished (must be kept)'; end if;
 
-  -- legacy table (until P7 drops it)
-  if to_regclass('public.agreement_acceptances') is not null then
-    if exists (select 1 from public.agreement_acceptances
-                where auth_user_id = u
-                  and (email <> 'deleted-user' or signature_name <> 'deleted-user' or ip is not null)) then
-      raise exception 'FAIL (AC8.3): legacy agreement_acceptances row not tokenised';
-    end if;
-  end if;
-
   if (select email from public.terms_acceptances where auth_user_id = keep) is null then
     raise exception 'FAIL: another user''s ledger row was anonymised';
   end if;
-  raise notice 'PASS (AC8.1–8.3): user delete succeeded, ledger anonymised, legacy tokenised';
+  raise notice 'PASS (AC8.1–8.2, AC2.5): user delete succeeded, ledger anonymised';
 end;
 $$;
 

@@ -7,10 +7,15 @@
 //   20261125120000_get470_drop_agreement_v1_1.sql   (P0)
 //   20261125121000_get470_registry_columns.sql      (P1, migration A)
 //   20261125122000_get470_legal_registry.sql        (P2, migration B)
+//   20261126120000_get470_drop_legacy_acceptances.sql (GET-486 A1 = GET-470 P7: legacy table dropped)
 // and asserts the P0/P2 test lists of implementation.md that can run offline — including the
 // destructive ones (registry/ledger immutability, truncate, user deletion) that must never
 // run against live staging (those are also in supabase/tests/sql/legal_destructive.sql for a
 // psql run on a Supabase branch).
+//
+// The stand-in still creates public.agreement_acceptances: it models the schema BEFORE GET-470,
+// which the historical migrations (P0, B's backfill) need. After `migrated()` the table is gone
+// (GET-486 A1), so every current-state test runs against the ledger-only schema.
 //
 // Run (from the supabase repo root):
 //   DENO_NO_PACKAGE_JSON=1 deno test -A supabase/tests/get470_legal_registry_test.ts
@@ -26,6 +31,7 @@ const GET332 = await read('20261017120000_get332_sales_anonymity.sql')
 const P0 = await read('20261125120000_get470_drop_agreement_v1_1.sql')
 const MIG_A = await read('20261125121000_get470_registry_columns.sql')
 const MIG_B = await read('20261125122000_get470_legal_registry.sql')
+const DROP_LEGACY = await read('20261126120000_get470_drop_legacy_acceptances.sql')
 
 const V10_SHA = '673fb82af840b1e6d2ab16097ad973d35159bb840f1bc44e5bf256a9213c13a0'
 const SHA_B = 'b'.repeat(64)
@@ -111,7 +117,8 @@ async function base(): Promise<Db> {
   return pg
 }
 
-async function migrated(seed = ''): Promise<Db> {
+// Up to migration B: the GET-470 dual-write era (legacy table still there).
+async function throughB(seed = ''): Promise<Db> {
   const pg = await base()
   if (seed) await pg.exec(seed)
   await pg.exec(P0)
@@ -119,6 +126,17 @@ async function migrated(seed = ''): Promise<Db> {
   await pg.exec(MIG_B)
   return pg
 }
+
+// The current schema: + GET-486 A1 (legacy table dropped). `beforeDrop` runs between B and A1.
+async function migrated(seed = '', beforeDrop?: (pg: Db) => Promise<void>): Promise<Db> {
+  const pg = await throughB(seed)
+  if (beforeDrop) await beforeDrop(pg)
+  await pg.exec(DROP_LEGACY)
+  return pg
+}
+
+const tableExists = async (pg: Db, name: string) =>
+  (await one<{ t: string | null }>(pg, `select to_regclass($1)::text t`, [name])).t !== null
 
 async function user(pg: Db, email: string): Promise<string> {
   const id = (await pg.query<{ id: string }>(`insert into auth.users (email) values ($1) returning id`, [email])).rows[0].id
@@ -376,7 +394,7 @@ Deno.test('buyer_terms_status: null-current → accepted; current → needs a ro
   assertEquals((await st() as { accepted_buyer_terms: boolean }).accepted_buyer_terms, true)
 })
 
-Deno.test('record_insyter_acceptance: legacy + ledger in one go; become_insyter then reaccept; stale writes nothing', async () => {
+Deno.test('record_insyter_acceptance: one ledger row per call; become_insyter then reaccept; stale writes nothing (AC2.6)', async () => {
   const pg = await migrated()
   const u = await user(pg, 'ins@getinsyts.test')
   const call = (v: string) =>
@@ -388,13 +406,15 @@ Deno.test('record_insyter_acceptance: legacy + ledger in one go; become_insyter 
     { context: 'become_insyter', signature_name: 'Ana', sha256: V10_SHA, email: 'ins@getinsyts.test', ip: '198.51.100.7' },
     { context: 'reaccept', signature_name: 'Ana', sha256: V10_SHA, email: 'ins@getinsyts.test', ip: '198.51.100.7' },
   ])
-  assertEquals((await one<{ n: number }>(pg, `select count(*)::int n from agreement_acceptances where auth_user_id = $1 and ip = '198.51.100.7'`, [u])).n, 2)
   assertEquals(await msg(call('v2.0')), 'terms_changed')
   assertEquals(await msg(pg.query(`select public.record_insyter_acceptance($1, null, '  ', 'v1.0')`, [u])), 'signature_required')
-  assertEquals((await one<{ n: number }>(pg, `select count(*)::int n from agreement_acceptances where auth_user_id = $1`, [u])).n, 2)
+  assertEquals((await one<{ n: number }>(pg, `select count(*)::int n from terms_acceptances where auth_user_id = $1`, [u])).n, 2)
+  // "no email for user" is kept on purpose (AC2.3 step 2)
+  const noMail = (await one<{ id: string }>(pg, `insert into auth.users (email) values (null) returning id`)).id
+  assertEquals(await code(pg.query(`select public.record_insyter_acceptance($1, null, 'X', 'v1.0')`, [noMail])), '22004')
 })
 
-Deno.test('deleting an auth user with legacy + ledger rows succeeds and anonymises both (AC8.1–8.3)', async () => {
+Deno.test('deleting an auth user with ledger rows succeeds and anonymises them (AC8.1–8.3, AC2.5)', async () => {
   const pg = await migrated()
   const u = await user(pg, 'gone@getinsyts.test')
   const keep = await user(pg, 'stay@getinsyts.test')
@@ -403,9 +423,6 @@ Deno.test('deleting an auth user with legacy + ledger rows succeeds and anonymis
   await pg.query(`delete from auth.users where id = $1`, [u])
   assertEquals(await one(pg, `select auth_user_id, email, signature_name, ip, user_agent, anonymised_at is not null a from terms_acceptances where auth_user_id = $1`, [u]), {
     auth_user_id: u, email: null, signature_name: null, ip: null, user_agent: null, a: true,
-  })
-  assertEquals(await one(pg, `select email, signature_name, ip from agreement_acceptances where auth_user_id = $1`, [u]), {
-    email: 'deleted-user', signature_name: 'deleted-user', ip: null,
   })
   assertEquals((await one<{ email: string }>(pg, `select email from terms_acceptances where auth_user_id = $1`, [keep])).email, 'stay@getinsyts.test')
 })
@@ -530,7 +547,7 @@ Deno.test('submit_inquiry_proposal: stamps agreement_version + proposal ledger r
 Deno.test('backfill: every legacy acceptance gets a become_insyter twin; malformed ip → null (AC2.6)', async () => {
   const u1 = crypto.randomUUID()
   const u2 = crypto.randomUUID()
-  const pg = await migrated(`
+  const pg = await throughB(`
     insert into agreement_acceptances (auth_user_id, email, signature_name, version, ip, accepted_at) values
       ('${u1}', 'a@x', 'A', 'v1.0', '203.0.113.1', '2026-06-01T00:00:00Z'),
       ('${u2}', 'b@x', 'B', 'v1.0', 'unknown, 10.0.0.1', '2026-06-02T00:00:00Z');`)
@@ -547,4 +564,93 @@ Deno.test('storage: public legal-documents bucket with a read-only policy', asyn
   assertEquals((await pg.query(`select policyname, cmd from pg_policies where schemaname = 'storage'`)).rows, [
     { policyname: 'legal-documents public read', cmd: 'SELECT' },
   ])
+})
+
+// ---------------------------------------------------------------------------- GET-486 A1: legacy table dropped
+
+Deno.test('A1: table + helper gone; both RPCs ledger-only and still service_role-only (AC2.3)', async () => {
+  const pg = await migrated()
+  assertEquals(await tableExists(pg, 'public.agreement_acceptances'), false)
+  assertEquals((await one<{ n: number }>(pg, `select count(*)::int n from pg_proc where proname = 'get470_safe_inet'`)).n, 0)
+  assertEquals((await one<{ n: number }>(pg,
+    `select count(*)::int n from pg_proc where prosrc ilike '%agreement_acceptances%'`)).n, 0)
+  for (const fn of ['record_insyter_acceptance(uuid, text, text, text, text, text)', 'anonymise_terms_acceptances(uuid)']) {
+    assertEquals(await one(pg, `select has_function_privilege('authenticated', 'public.${fn}', 'execute') a,
+                                       has_function_privilege('anon', 'public.${fn}', 'execute') b,
+                                       has_function_privilege('service_role', 'public.${fn}', 'execute') s`), { a: false, b: false, s: true }, fn)
+  }
+})
+
+Deno.test('A1 guard: a legacy row without its ledger twin → raises, nothing dropped (AC2.2, AC2.3)', async () => {
+  for (const seed of [
+    // no twin at all (written behind the RPC's back after the backfill)
+    `insert into agreement_acceptances (auth_user_id, email, signature_name, version, accepted_at)
+       values (gen_random_uuid(), 'x@y', 'X', 'v1.0', '2026-07-01T00:00:00Z')`,
+    // twin exists but the names differ
+    `with a as (insert into agreement_acceptances (auth_user_id, email, signature_name, version, accepted_at)
+                values (gen_random_uuid(), 'x@y', 'Legacy Name', 'v1.0', '2026-07-02T00:00:00Z') returning *)
+     insert into terms_acceptances (auth_user_id, email, signature_name, document_type, version, sha256, context, accepted_at)
+       select auth_user_id, email, 'Other Name', 'insyter_agreement', 'v1.0', '${V10_SHA}', 'become_insyter', accepted_at from a`,
+    // legacy tokenised but the twin was never anonymised
+    `with a as (insert into agreement_acceptances (auth_user_id, email, signature_name, version, accepted_at)
+                values (gen_random_uuid(), 'deleted-user', 'deleted-user', 'v1.0', '2026-07-03T00:00:00Z') returning *)
+     insert into terms_acceptances (auth_user_id, email, signature_name, document_type, version, sha256, context, accepted_at)
+       select auth_user_id, 'x@y', 'Name', 'insyter_agreement', 'v1.0', '${V10_SHA}', 'become_insyter', accepted_at from a`,
+  ]) {
+    const pg = await throughB()
+    await pg.exec(seed)
+    const m = await msg(pg.exec(DROP_LEGACY))
+    assert(m.includes('have no ledger twin'), m)
+    await pg.exec('rollback')
+    assertEquals(await tableExists(pg, 'public.agreement_acceptances'), true)
+    assertEquals((await one<{ n: number }>(pg, `select count(*)::int n from pg_proc where proname = 'get470_safe_inet'`)).n, 1)
+    assertEquals((await one<{ n: number }>(pg,
+      `select count(*)::int n from pg_proc where proname = 'record_insyter_acceptance' and prosrc ilike '%agreement_acceptances%'`)).n, 1)
+  }
+})
+
+Deno.test('A1: backfilled twin of a user deleted before GET-470 is anonymised by the migration', async () => {
+  const ghost = crypto.randomUUID() // never in auth.users: deleted before the delete trigger existed
+  let stay = ''
+  const pg = await migrated(
+    `insert into agreement_acceptances (auth_user_id, email, signature_name, version, ip, accepted_at)
+       values ('${ghost}', 'ghost@x', 'Ghost', 'v1.0', '203.0.113.9', '2026-06-01T00:00:00Z');`,
+    async (db) => {
+      assertEquals((await one<{ e: string }>(db, `select email e from terms_acceptances where auth_user_id = $1`, [ghost])).e, 'ghost@x')
+      stay = await user(db, 'stay@getinsyts.test')
+      await db.query(`select public.record_insyter_acceptance($1, null, 'Stay', 'v1.0', '1.2.3.4', 'UA')`, [stay])
+    },
+  )
+  assertEquals(await one(pg, `select email, signature_name, ip, user_agent, anonymised_at is not null a from terms_acceptances where auth_user_id = $1`, [ghost]), {
+    email: null, signature_name: null, ip: null, user_agent: null, a: true,
+  })
+  // a live user's row is untouched
+  assertEquals(await one(pg, `select signature_name, anonymised_at from terms_acceptances where auth_user_id = $1`, [stay]), {
+    signature_name: 'Stay', anonymised_at: null,
+  })
+})
+
+Deno.test('A1: a user deleted under GET-470 (tokenised legacy ↔ anonymised twin) passes the guard', async () => {
+  const pg = await migrated('', async (db) => {
+    const u = await user(db, 'gone@getinsyts.test')
+    await db.query(`select public.record_insyter_acceptance($1, null, 'Gone', 'v1.0', '1.2.3.4', 'UA')`, [u])
+    await db.query(`delete from auth.users where id = $1`, [u])
+    assertEquals((await one<{ s: string }>(db, `select signature_name s from agreement_acceptances where auth_user_id = $1`, [u])).s, 'deleted-user')
+  })
+  assertEquals(await tableExists(pg, 'public.agreement_acceptances'), false)
+  assertEquals((await one<{ n: number }>(pg, `select count(*)::int n from terms_acceptances where anonymised_at is not null`)).n, 1)
+})
+
+Deno.test('A1 pre-check (prod-ops/get486-legacy-precheck.sql) agrees with the guard and only reads', async () => {
+  const PRECHECK = await Deno.readTextFile(new URL('../prod-ops/get486-legacy-precheck.sql', import.meta.url))
+  assert(!/\b(insert|update|delete|drop|alter|create|truncate|grant|revoke)\b/i.test(PRECHECK.replace(/--.*$/gm, '')), 'select-only')
+  const pg = await throughB(`
+    insert into agreement_acceptances (auth_user_id, email, signature_name, version, accepted_at)
+      values ('${crypto.randomUUID()}', 'g@x', 'G', 'v1.0', '2026-06-01T00:00:00Z');`)
+  type R = { legacy_rows: number; unmatched_legacy_rows: number; orphan_ledger_users: number; functions_reading_legacy: string[] }
+  const clean = (await pg.query<R>(PRECHECK)).rows[0]
+  assertEquals([Number(clean.legacy_rows), Number(clean.unmatched_legacy_rows), Number(clean.orphan_ledger_users)], [1, 0, 1])
+  assertEquals(clean.functions_reading_legacy, ['public.anonymise_terms_acceptances', 'public.record_insyter_acceptance'])
+  await pg.exec(`insert into agreement_acceptances (auth_user_id, email, signature_name, version) values (gen_random_uuid(), 'x@y', 'X', 'v1.0')`)
+  assertEquals(Number((await pg.query<R>(PRECHECK)).rows[0].unmatched_legacy_rows), 1)
 })

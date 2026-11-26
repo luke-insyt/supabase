@@ -14,7 +14,8 @@ Checks (implementation.md P2 test list):
     i.e. after P3 — skipped before) and purchases_rn_session_once rejects a 2nd RN row;
   * notices claim/record per type (insyter_agreement + privacy for the same user + version);
   * submit_inquiry_proposal raises terms_changed on a stale p_agreement_version (D-8);
-  * backfill: every legacy agreement_acceptances row has a ledger twin (AC2.6);
+  * record_insyter_acceptance writes exactly ONE ledger row with signature_name, ip and UA
+    (GET-486 AC2.6: the ledger is the only acceptance record);
   * deleting the user anonymises their rows (AC8.1).
 
 Usage: SUPABASE_SERVICE_ROLE_KEY=... python3 supabase/tests/legal_ledger_test.py
@@ -135,13 +136,20 @@ try:
         "p_ip": "203.0.113.70", "p_user_agent": "t", "p_agreement_version": "v0-stale"})
     check("stale p_agreement_version raises terms_changed", "terms_changed" in err_text(r))
 
-    print("BACKFILL (AC2.6)")
-    c, legacy = call("GET", "/rest/v1/agreement_acceptances?select=auth_user_id,version,accepted_at")
-    c, ledger = call("GET", "/rest/v1/terms_acceptances?select=auth_user_id,version,accepted_at"
-                            "&document_type=eq.insyter_agreement&context=in.(become_insyter,reaccept)")
-    have = {(x["auth_user_id"], x["version"], x["accepted_at"]) for x in (ledger or [])}
-    missing = [x for x in (legacy or []) if (x["auth_user_id"], x["version"], x["accepted_at"]) not in have]
-    check(f"every legacy acceptance has a ledger twin ({len(legacy or [])} legacy)", not missing)
+    print("record_insyter_acceptance (GET-486 AC2.6)")
+    q = f"/rest/v1/terms_acceptances?select=id&auth_user_id=eq.{a}&document_type=eq.insyter_agreement"
+    c, before = call("GET", q)
+    c, rid = rpc("record_insyter_acceptance", {"p_user": a, "p_email": None, "p_signature_name": "Ledger Tester",
+                                              "p_version": iv, "p_ip": "203.0.113.71", "p_ua": "get486-ledger-test"})
+    check("record_insyter_acceptance returns the ledger row id", c == 200 and isinstance(rid, str))
+    c, after = call("GET", q)
+    check("exactly one new ledger row", isinstance(before, list) and isinstance(after, list)
+          and len(after) == len(before) + 1)
+    c, rows = call("GET", f"/rest/v1/terms_acceptances?select=signature_name,host:ip,user_agent,context&id=eq.{rid}")
+    row = rows[0] if isinstance(rows, list) and rows else {}
+    check("row carries signature_name, IP and UA", row.get("signature_name") == "Ledger Tester"
+          and str(row.get("host", "")).startswith("203.0.113.71") and row.get("user_agent") == "get486-ledger-test")
+    check("context reaccept (the user already had an insyter_agreement row)", row.get("context") == "reaccept")
 finally:
     print("TEARDOWN")
     for s in sessions:

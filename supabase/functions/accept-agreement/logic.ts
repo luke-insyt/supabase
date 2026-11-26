@@ -5,8 +5,9 @@
 //   * The current version is read for document_type = 'insyter_agreement' ONLY: once a second
 //     type (buyer_terms, privacy, …) has a current row, an unfiltered `.maybeSingle()` errors
 //     and every Insyter acceptance would 500 (feature.md §2.2 hazard).
-//   * The acceptance is written by ONE RPC, record_insyter_acceptance, which inserts the legacy
-//     agreement_acceptances row AND the terms_acceptances ledger row in one transaction.
+//   * The acceptance is written by ONE RPC, record_insyter_acceptance, which inserts the
+//     terms_acceptances ledger row — ledger only (GET-486 A1: the ledger is the only
+//     acceptance record).
 //   * IP / user agent come from request-meta: the body's values only with a valid server secret.
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import type { RequestMeta } from '../_shared/request-meta.ts'

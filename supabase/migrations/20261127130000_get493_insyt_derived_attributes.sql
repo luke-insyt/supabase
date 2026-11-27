@@ -8,7 +8,16 @@
 --
 -- Who writes it: a Cowork scheduled task (service role), added later — this migration
 -- ships no population job. The job writes NULL rather than guessing when the text does
--- not name a league or club.
+-- not name a league or club. A row with every attribute NULL and confidence NULL means
+-- "looked at it, found nothing"; the job still writes it WITH source_content_rev and
+-- source_updated_at, so the staleness check stops it re-processing the same insyt until
+-- the insyt changes. (source_fields may be '{}' on such a row, and is harmless if '{}'
+-- even when confidence is set.)
+--
+-- league_tier is only meaningful with a country: the job must not write a league_tier
+-- without also writing country (NULL country is "unknown", never "Germany"). This is a
+-- job contract, not a CHECK, so the twin crm_derived_attributes (GET-492) stays in step;
+-- if a CHECK (league_tier is null or country is not null) is added, add it to both.
 --
 -- Why a sibling table and NOT new columns on public.insyts:
 --   - No app/server code reads or filters insyts by league/country/tier (the feed
@@ -64,13 +73,24 @@ comment on table public.insyt_derived_attributes is
   'GET-493: league/club/country derived from an insyt''s title/abstract/tags by a service-role scheduled job, for digest-style recipient matching. One row per insyt; NULL when not named. Shared ladder with crm_derived_attributes (GET-492). Server-only.';
 
 comment on column public.insyt_derived_attributes.league_tier is
-  'League level in its own country''s pyramid, 1 = top flight (same meaning as LeagueEntry.tier in the RN Social Search registry; not comparable across countries — always match on (country, league_tier)). German ladder: 1 = 1. Bundesliga; 2 = 2. Bundesliga; 3 = 3. Liga; 4 = Regionalliga (Bayern/Nord/Nordost/Südwest/West); 5 = Oberliga (all Oberligen incl. Bayernliga, Hessenliga, Bremen-Liga, ...); 6 = Verbandsliga / Landesliga (6th tier, top level of the state FA; name varies by state); 7 = Amateurfußball: tier 7 and below (Landesliga, Bezirksliga, Kreisliga, ...) or "amateur" with no level named (catch-all bottom rung). Outside Germany: the level in that country''s pyramid with country set (e.g. Regionalliga Ost Austria = 3, Tweede Divisie = 3). NULL = level unknown, or youth/women''s leagues with no clean rung — never guessed. Shared with crm_derived_attributes (GET-492); change both together.';
+  'Level of the league in its own country''s pyramid, 1 = top flight (same meaning as LeagueEntry.tier '
+  'in the RN Social Search registry, GET-472). Not comparable across countries: always match on '
+  '(country, league_tier). German ladder: 1 = 1. Bundesliga; 2 = 2. Bundesliga; 3 = 3. Liga; '
+  '4 = Regionalliga (Bayern/Nord/Nordost/Südwest/West); 5 = Oberliga (all Oberligen incl. Bayernliga, '
+  'Hessenliga, Bremen-Liga); 6 = Verbandsliga/Landesliga (6th tier, top level of the state FA; name '
+  'varies by state); 7 = Amateurfußball: tier 7 and below (Landesliga, Bezirksliga, Kreisliga, ...) or '
+  '"amateur" with no level named (catch-all bottom rung). Outside Germany: the level in that country''s '
+  'pyramid with country set (e.g. Regionalliga Ost Austria = 3, Tweede Divisie = 3). NULL = level unknown, '
+  'or youth/women''s leagues with no clean rung. Same ladder as crm_derived_attributes.league_tier '
+  '(GET-492); change both together.';
 
 comment on column public.insyt_derived_attributes.country is
-  'English country name as in the RN Social Search registry (''Germany'', ''Austria'', ''Switzerland'', ''Netherlands'', ...). Written explicitly, including ''Germany''. NULL = unknown, NOT "Germany by default".';
+  'English country name as in the RN Social Search registry (''Germany'', ''Austria'', ''Switzerland'', ''Netherlands'', ...). Written explicitly, including ''Germany''. NULL = unknown, NOT "Germany by default". Required whenever league_tier is set (job contract).';
 
 comment on column public.insyt_derived_attributes.confidence is
-  'verified = the club or league is named explicitly in the source text; inferred = derived (e.g. tier from a club name, country from a league name). Required whenever any derived value is set. Shared with crm_derived_attributes (GET-492).';
+  'verified = the club or league is named explicitly in the source text; inferred = derived '
+  '(e.g. tier from a club name, country from a league name). NULL only on an all-null "found nothing" row. '
+  'Same vocabulary as crm_derived_attributes.confidence (GET-492).';
 
 comment on column public.insyt_derived_attributes.source_fields is
   'Which insyt fields the values were derived from (subset of title, abstract, tags).';

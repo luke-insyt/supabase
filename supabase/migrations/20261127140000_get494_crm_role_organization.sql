@@ -13,7 +13,8 @@
 -- (e.g. one note names the club, a later one says "now Head of Scouting").
 --
 -- Additive and re-runnable: ADD COLUMN IF NOT EXISTS, constraints dropped-if-exists then
--- re-added, CREATE OR REPLACE VIEW. A second apply is a no-op. Access stays service-role only
+-- re-added, CREATE OR REPLACE VIEW. A second apply changes nothing (it re-validates the CHECKs
+-- under a brief ACCESS EXCLUSIVE lock, harmless on this small table). Access stays service-role only
 -- (no anon/authenticated grants; the REVOKEs are restated because Supabase default
 -- privileges grant to anon/authenticated).
 
@@ -36,6 +37,15 @@ alter table public.crm_derived_attributes
   add constraint crm_derived_attributes_organization_name_check
   check (char_length(btrim(organization_name)) between 1 and 200);
 
+-- organization_name holds a NON-club employer only: enforce that it never repeats club_name
+-- (case/whitespace-insensitive), so a job bug cannot write the club into both columns.
+alter table public.crm_derived_attributes
+  drop constraint if exists crm_derived_attributes_organization_not_club;
+alter table public.crm_derived_attributes
+  add constraint crm_derived_attributes_organization_not_club
+  check (organization_name is null or club_name is null
+         or lower(btrim(organization_name)) <> lower(btrim(club_name)));
+
 -- Extend "any derived value needs a confidence; an all-null row needs none" to the new
 -- columns. Without this a row with only a role (or only is_agent) and no confidence passes.
 -- Existing rows: the old rule already forced confidence on any row with a value, and the new
@@ -49,6 +59,11 @@ alter table public.crm_derived_attributes
              and country is null and coalesce(cardinality(derived_interests), 0) = 0
              and role is null and organization_name is null and is_agent is null));
 
+comment on table public.crm_derived_attributes is
+  'GET-492/GET-494: club/league/interest facts plus role, organization_name (non-club employer) '
+  'and is_agent, derived from admin_user_notes by a Cowork scheduled job. '
+  'NULL rather than guess. Service-role only (RLS on, no policies, anon/authenticated revoked).';
+
 comment on column public.crm_derived_attributes.role is
   'GET-494: free-text job title as stated in the notes (e.g. ''Scout'', ''Head of Scouting'', '
   '''Sporting Director'', ''Player Agent''). Not normalised to a vocabulary. NULL = unknown.';
@@ -56,7 +71,7 @@ comment on column public.crm_derived_attributes.role is
 comment on column public.crm_derived_attributes.organization_name is
   'GET-494: non-club employer or agency (e.g. ''GROW Talents''), distinct from club_name '
   '(e.g. ''Eintracht Braunschweig''). Never a duplicate of club_name: a club employer goes in '
-  'club_name only. NULL = none stated / unknown.';
+  'club_name only (enforced by crm_derived_attributes_organization_not_club). NULL = none stated / unknown.';
 
 comment on column public.crm_derived_attributes.is_agent is
   'GET-494: true for player agents / agencies; false only when the notes clearly say otherwise '
